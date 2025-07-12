@@ -1,0 +1,347 @@
+use std::fmt::Display;
+use std::net::{IpAddr, Ipv4Addr};
+use crate::http::client::HttpClient;
+use crate::http::server::HttpServer;
+use crate::http::v10::http_v10::HttpV10Client;
+use crate::http::v11::http_v11::HttpV11Server;
+
+pub enum HttpVersion {
+    V10,
+    V11,
+    V2,
+    V3
+}
+
+impl HttpVersion {
+    pub fn from_str(s: &str) -> Option<HttpVersion> {
+        match s {
+            "HTTP/1.0" => Some(HttpVersion::V10),
+            "HTTP/1.1" => Some(HttpVersion::V11),
+            "HTTP/2" => Some(HttpVersion::V2),
+            "HTTP/3" => Some(HttpVersion::V3),
+            _ => None,
+        }
+    }
+
+    pub fn create_server(&self, port: u16) -> Result<Box<dyn HttpServer>, String> {
+        match self {
+            HttpVersion::V10 => Err("HTTP/1.0 server not implemented".to_string()),
+            HttpVersion::V11 => Ok(Box::new(HttpV11Server::new(port, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))))),
+            HttpVersion::V2 => Err("HTTP/2 server not implemented".to_string()),
+            HttpVersion::V3 => Err("HTTP/3 server not implemented".to_string()),
+        }
+    }
+
+    pub fn create_client(&self, host: IpAddr, port: u16) -> Result<Box<dyn HttpClient>, String> {
+        match self {
+            HttpVersion::V10 => Ok(Box::new(HttpV10Client::new(host, port))),
+            HttpVersion::V11 => Err("HTTP/1.1 client not implemented".to_string()),
+            HttpVersion::V2 => Err("HTTP/2 client not implemented".to_string()),
+            HttpVersion::V3 => Err("HTTP/3 client not implemented".to_string()),
+        }
+    }
+
+    pub fn to_string(&self) -> &'static str {
+        match self {
+            HttpVersion::V10 => "HTTP/1.0",
+            HttpVersion::V11 => "HTTP/1.1",
+            HttpVersion::V2 => "HTTP/2",
+            HttpVersion::V3 => "HTTP/3",
+        }
+    }
+}
+
+impl Clone for HttpVersion {
+    fn clone(&self) -> Self {
+        match self {
+            HttpVersion::V10 => HttpVersion::V10,
+            HttpVersion::V11 => HttpVersion::V11,
+            HttpVersion::V2 => HttpVersion::V2,
+            HttpVersion::V3 => HttpVersion::V3,
+        }
+    }
+}
+
+impl PartialEq for HttpVersion {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (HttpVersion::V10, HttpVersion::V10) => true,
+            (HttpVersion::V11, HttpVersion::V11) => true,
+            (HttpVersion::V2, HttpVersion::V2) => true,
+            (HttpVersion::V3, HttpVersion::V3) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Display for HttpVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str: &'static str = match self {
+            HttpVersion::V10 => "HTTP/1.0",
+            HttpVersion::V11 => "HTTP/1.1",
+            HttpVersion::V2 => "HTTP/2",
+            HttpVersion::V3 => "HTTP/3",
+        };
+        write!(f, "{}", str)
+    }
+}
+
+pub enum StatusCode {
+    Ok,
+    Created,
+    Accepted,
+    NoContent,
+    BadRequest,
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    InternalServerError
+}
+
+pub struct HttpStatus {
+    pub code: u16,
+    pub text: String,
+}
+
+impl HttpStatus {
+    pub fn new(code: u16, text: String) -> Self {
+        HttpStatus { code, text }
+    }
+}
+
+impl Clone for HttpStatus {
+    fn clone(&self) -> Self {
+        HttpStatus {
+            code: self.code,
+            text: self.text.clone(),
+        }
+    }
+}
+
+impl PartialEq for HttpStatus {
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code && self.text == other.text
+    }
+}
+
+impl Display for HttpStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.code, self.text)
+    }
+}
+
+impl StatusCode {
+    pub fn code(&self) -> u16 {
+        match self {
+            StatusCode::Ok => 200,
+            StatusCode::Created => 201,
+            StatusCode::Accepted => 202,
+            StatusCode::NoContent => 204,
+            StatusCode::BadRequest => 400,
+            StatusCode::Unauthorized => 401,
+            StatusCode::Forbidden => 403,
+            StatusCode::NotFound => 404,
+            StatusCode::InternalServerError => 500,
+        }
+    }
+
+    pub fn text(&self) -> &'static str {
+        match self {
+            StatusCode::Ok => "OK",
+            StatusCode::Created => "Created",
+            StatusCode::Accepted => "Accepted",
+            StatusCode::NoContent => "No Content",
+            StatusCode::BadRequest => "Bad Request",
+            StatusCode::Unauthorized => "Unauthorized",
+            StatusCode::Forbidden => "Forbidden",
+            StatusCode::NotFound => "Not Found",
+            StatusCode::InternalServerError => "Internal Server Error",
+        }
+    }
+
+    pub fn from_code(code: u16) -> Option<StatusCode> {
+        match code {
+            200 => Some(StatusCode::Ok),
+            201 => Some(StatusCode::Created),
+            202 => Some(StatusCode::Accepted),
+            204 => Some(StatusCode::NoContent),
+            400 => Some(StatusCode::BadRequest),
+            401 => Some(StatusCode::Unauthorized),
+            403 => Some(StatusCode::Forbidden),
+            404 => Some(StatusCode::NotFound),
+            500 => Some(StatusCode::InternalServerError),
+            _ => None,
+        }
+    }
+}
+
+impl Clone for StatusCode {
+    fn clone(&self) -> Self {
+        match self {
+            StatusCode::Ok => StatusCode::Ok,
+            StatusCode::Created => StatusCode::Created,
+            StatusCode::Accepted => StatusCode::Accepted,
+            StatusCode::NoContent => StatusCode::NoContent,
+            StatusCode::BadRequest => StatusCode::BadRequest,
+            StatusCode::Unauthorized => StatusCode::Unauthorized,
+            StatusCode::Forbidden => StatusCode::Forbidden,
+            StatusCode::NotFound => StatusCode::NotFound,
+            StatusCode::InternalServerError => StatusCode::InternalServerError,
+        }
+    }
+}
+
+impl PartialEq for StatusCode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (StatusCode::Ok, StatusCode::Ok) => true,
+            (StatusCode::Created, StatusCode::Created) => true,
+            (StatusCode::Accepted, StatusCode::Accepted) => true,
+            (StatusCode::NoContent, StatusCode::NoContent) => true,
+            (StatusCode::BadRequest, StatusCode::BadRequest) => true,
+            (StatusCode::Unauthorized, StatusCode::Unauthorized) => true,
+            (StatusCode::Forbidden, StatusCode::Forbidden) => true,
+            (StatusCode::NotFound, StatusCode::NotFound) => true,
+            (StatusCode::InternalServerError, StatusCode::InternalServerError) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Display for StatusCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str: &'static str = match self {
+            StatusCode::Ok => "200 OK",
+            StatusCode::Created => "201 Created",
+            StatusCode::Accepted => "202 Accepted",
+            StatusCode::NoContent => "204 No Content",
+            StatusCode::BadRequest => "400 Bad Request",
+            StatusCode::Unauthorized => "401 Unauthorized",
+            StatusCode::Forbidden => "403 Forbidden",
+            StatusCode::NotFound => "404 Not Found",
+            StatusCode::InternalServerError => "500 Internal Server Error",
+        };
+        write!(f, "{}", str)
+    }
+}
+
+pub enum RequestMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+}
+
+impl RequestMethod {
+    pub fn from_str(s: &str) -> Option<RequestMethod> {
+        match s {
+            "GET" => Some(RequestMethod::Get),
+            "POST" => Some(RequestMethod::Post),
+            "PUT" => Some(RequestMethod::Put),
+            "DELETE" => Some(RequestMethod::Delete),
+            _ => None,
+        }
+    }
+}
+
+impl Clone for RequestMethod {
+    fn clone(&self) -> Self {
+        match self {
+            RequestMethod::Get => RequestMethod::Get,
+            RequestMethod::Post => RequestMethod::Post,
+            RequestMethod::Put => RequestMethod::Put,
+            RequestMethod::Delete => RequestMethod::Delete,
+        }
+    }
+}
+
+impl PartialEq for RequestMethod {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (RequestMethod::Get, RequestMethod::Get) => true,
+            (RequestMethod::Post, RequestMethod::Post) => true,
+            (RequestMethod::Put, RequestMethod::Put) => true,
+            (RequestMethod::Delete, RequestMethod::Delete) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Display for RequestMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str: &'static str = match self {
+            RequestMethod::Get => "GET",
+            RequestMethod::Post => "POST",
+            RequestMethod::Put => "PUT",
+            RequestMethod::Delete => "DELETE",
+        };
+        write!(f, "{}", str)
+    }
+}
+
+pub enum ContentType {
+    TextPlain,
+    TextHtml,
+    ApplicationJson,
+    ApplicationXml,
+}
+
+impl ContentType {
+    pub fn from_str(s: &str) -> Option<ContentType> {
+        match s {
+            "text/plain" => Some(ContentType::TextPlain),
+            "text/html" => Some(ContentType::TextHtml),
+            "application/json" => Some(ContentType::ApplicationJson),
+            "application/xml" => Some(ContentType::ApplicationXml),
+            _ => None,
+        }
+    }
+}
+
+impl Clone for ContentType {
+    fn clone(&self) -> Self {
+        match self {
+            ContentType::TextPlain => ContentType::TextPlain,
+            ContentType::TextHtml => ContentType::TextHtml,
+            ContentType::ApplicationJson => ContentType::ApplicationJson,
+            ContentType::ApplicationXml => ContentType::ApplicationXml,
+        }
+    }
+}
+
+impl PartialEq for ContentType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ContentType::TextPlain, ContentType::TextPlain) => true,
+            (ContentType::TextHtml, ContentType::TextHtml) => true,
+            (ContentType::ApplicationJson, ContentType::ApplicationJson) => true,
+            (ContentType::ApplicationXml, ContentType::ApplicationXml) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Display for ContentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str: &'static str = match self {
+            ContentType::TextPlain => "text/plain",
+            ContentType::TextHtml => "text/html",
+            ContentType::ApplicationJson => "application/json",
+            ContentType::ApplicationXml => "application/xml",
+        };
+        write!(f, "{}", str)
+    }
+}
+
+pub struct HttpRequest {
+    pub method: RequestMethod,
+    pub path: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+}
+
+pub struct HttpResponse {
+    pub status: HttpStatus,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+}
