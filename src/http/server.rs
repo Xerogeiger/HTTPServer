@@ -1,5 +1,5 @@
 use crate::http::shared::{ContentType, HttpRequest, HttpResponse, HttpStatus};
-use std::net::IpAddr;
+use std::net::{IpAddr, TcpStream};
 use std::string::ToString;
 
 pub enum ServerStatus {
@@ -52,7 +52,7 @@ pub trait HttpServerClient {
     }
     fn disconnect(&mut self) -> Result<(), String>;
     fn is_connected(&self) -> Result<bool, String>;
-    fn new(ip_address: IpAddr, port: u16) -> Self;
+    fn new(ip_address: IpAddr, port: u16, stream: TcpStream) -> Self;
     fn get_ip_address(&self) -> Result<IpAddr, String>;
     fn get_port(&self) -> Result<u16, String>;
 }

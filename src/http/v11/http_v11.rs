@@ -56,12 +56,12 @@ impl HttpServerClient for HttpV11ServerClient {
         Ok(self.connected)
     }
 
-    fn new(ip_address: IpAddr, port: u16) -> Self {
+    fn new(ip_address: IpAddr, port: u16, stream: TcpStream) -> Self {
         HttpV11ServerClient {
             ip_address,
             port,
             connected: false,
-            stream: TcpStream::connect((ip_address, port)).expect("Could not connect to server")
+            stream
         }
     }
 
@@ -104,11 +104,11 @@ impl HttpServer for HttpV11Server {
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
-                        let mut client = HttpV11ServerClient::new(address, port);
+                        println!("New client connected: {:?}", stream.peer_addr());
+                        let mut client = HttpV11ServerClient::new(address, port, stream);
                         client.connected = true; // Mark client as connected
                         clients_arc.lock().unwrap().push(client);
                         // Handle the client in a separate thread or process
-                        println!("New client connected: {:?}", stream.peer_addr());
                     }
                     Err(e) => eprintln!("Failed to accept connection: {}", e),
                 }
