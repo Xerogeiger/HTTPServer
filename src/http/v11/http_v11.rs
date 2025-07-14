@@ -1,8 +1,9 @@
+use std::io::Read;
 use std::net::{IpAddr, TcpListener, TcpStream};
 use crate::http::server::ServerStatus;
 use crate::http::server::HttpServer;
 use crate::http::server::HttpServerClient;
-use crate::http::shared::{HttpRequest, HttpResponse};
+use crate::http::shared::{HttpRequest, HttpResponse, HttpStatus, RequestMethod};
 use crate::http::shared::RequestMethod::Get;
 use std::sync::{Arc, Mutex};
 
@@ -19,13 +20,40 @@ impl HttpServerClient for HttpV11ServerClient {
         if !self.connected {
             return Err("Client is not connected".to_string());
         }
-        // Simulate receiving a request
-        Ok(HttpRequest {
-            method: Get,
-            path: "/".to_string(),
-            headers: vec![("Host".to_string(), "localhost".to_string())],
-            body: None
-        })
+
+        let mut buffer = [0; 1024];
+        match self.stream.read(&mut buffer) {
+            Ok(size) if size > 0 => {
+                let request_text = String::from_utf8_lossy(&buffer[..size]);
+                let mut lines = request_text.lines();
+                let request_line = lines.next().ok_or("Empty request line")?;
+                let parts: Vec<&str> = request_line.split_whitespace().collect();
+                if parts.len() < 2 {
+                    return Err("Invalid request line".to_string());
+                }
+                let method = parts[0].to_string();
+                let path = parts[1].to_string();
+                let headers: Vec<(String, String)> = lines
+                    .filter_map(|line| {
+                        let mut header_parts = line.splitn(2, ':');
+                        if let (Some(key), Some(value)) = (header_parts.next(), header_parts.next()) {
+                            Some((key.trim().to_string(), value.trim().to_string()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                Ok(HttpRequest {
+                    method: RequestMethod::from_str(&method).unwrap_or(Get),
+                    path,
+                    headers,
+                    body: None,
+                })
+            }
+            Ok(_) => Err("No data received".to_string()),
+            Err(e) => Err(format!("Failed to read from stream: {}", e)),
+        }
     }
 
     fn send_response(&mut self, response: HttpResponse) -> Result<(), String> {
@@ -107,8 +135,31 @@ impl HttpServer for HttpV11Server {
                         println!("New client connected: {:?}", stream.peer_addr());
                         let mut client = HttpV11ServerClient::new(address, port, stream);
                         client.connected = true; // Mark client as connected
-                        clients_arc.lock().unwrap().push(client);
                         // Handle the client in a separate thread or process
+                        match client.receive_request() {
+                            Ok(request) => {
+                                println!("Received request: {} {}", request.method, request.path);
+                                // Here you would typically process the request and send a response
+                                let response = HttpResponse {
+                                    status: HttpStatus {
+                                        code: 200,
+                                        text: "OK".to_string(),
+                                    },
+                                    headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
+                                    body: Some("Hello, World!".to_string()),
+                                };
+                                if let Err(e) = client.send_response(response) {
+                                    eprintln!("Failed to send response: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to receive request: {}", e);
+                                if let Err(disconnect_err) = client.disconnect() {
+                                    eprintln!("Failed to disconnect client: {}", disconnect_err);
+                                }
+                            }
+                        }
+                        clients_arc.lock().unwrap().push(client);
                     }
                     Err(e) => eprintln!("Failed to accept connection: {}", e),
                 }
