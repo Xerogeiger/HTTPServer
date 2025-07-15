@@ -14,7 +14,7 @@ fn main() {
     match client {
         Ok(c) => {
             match c.get("/") {
-                Ok(response) => println!("Response: {}", response.body.unwrap_or_default()),
+                Ok(response) => println!("Response: {}", response),
                 Err(e) => eprintln!("Failed to get response: {}", e),
             }
         },
@@ -22,5 +22,5 @@ fn main() {
     }
 
     // Wait for the server thread to finish
-    server.stop().expect("Failed to stop server");
+    // server.stop().expect("Failed to stop server");
 }

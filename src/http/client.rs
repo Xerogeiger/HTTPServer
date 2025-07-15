@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, TcpStream};
 use crate::http::shared::{HttpRequest, HttpResponse};
 use crate::http::shared::RequestMethod::{Delete, Get, Post, Put};
 
@@ -13,6 +13,7 @@ pub(crate) trait HttpClient {
     fn get_port(&self) -> u16;
 
     fn send_request(&self, request: HttpRequest) -> Result<HttpResponse, String>;
+    fn receive_response(&self, stream: &mut TcpStream) -> Result<HttpResponse, String>;
 
     fn get(&self, url: &str) -> Result<HttpResponse, String> {
         let req = HttpRequest {

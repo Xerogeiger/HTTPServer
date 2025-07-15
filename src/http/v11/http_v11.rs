@@ -1,17 +1,29 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use crate::http::server::ServerStatus;
 use crate::http::server::HttpServer;
 use crate::http::server::HttpServerClient;
-use crate::http::shared::{HttpRequest, HttpResponse, HttpStatus, RequestMethod};
+use crate::http::shared::{HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
 use crate::http::shared::RequestMethod::Get;
 use std::sync::{Arc, Mutex};
+use crate::http::shared::ContentType::TextPlain;
 
 struct HttpV11ServerClient {
     ip_address: IpAddr,
     stream: TcpStream,
     port: u16,
     connected: bool
+}
+
+impl Clone for HttpV11ServerClient {
+    fn clone(&self) -> Self {
+        HttpV11ServerClient {
+            ip_address: self.ip_address,
+            stream: self.stream.try_clone().expect("Failed to clone stream"),
+            port: self.port,
+            connected: self.connected
+        }
+    }
 }
 
 impl HttpServerClient for HttpV11ServerClient {
@@ -33,7 +45,7 @@ impl HttpServerClient for HttpV11ServerClient {
                 }
                 let method = parts[0].to_string();
                 let path = parts[1].to_string();
-                let headers: Vec<(String, String)> = lines
+                let headers: Vec<(String, String)> = lines.clone()
                     .filter_map(|line| {
                         let mut header_parts = line.splitn(2, ':');
                         if let (Some(key), Some(value)) = (header_parts.next(), header_parts.next()) {
@@ -44,11 +56,17 @@ impl HttpServerClient for HttpV11ServerClient {
                     })
                     .collect();
 
+                let body = if let Some(body_line) = lines.next() {
+                    Some(body_line.to_string())
+                } else {
+                    None
+                };
+
                 Ok(HttpRequest {
                     method: RequestMethod::from_str(&method).unwrap_or(Get),
                     path,
                     headers,
-                    body: None,
+                    body,
                 })
             }
             Ok(_) => Err("No data received".to_string()),
@@ -61,8 +79,20 @@ impl HttpServerClient for HttpV11ServerClient {
         if !self.connected {
             return Err("Client is not connected".to_string());
         }
-        // Simulate sending a response
-        println!("Sending response: {} \r\n {}", response.status, response.body.unwrap_or_default());
+
+        let mut r = response.clone();
+
+        r.headers.push(("Content-Length".to_string(), r.body.clone().unwrap().len().to_string()));
+
+        let bytes = r.get_bytes();
+
+        println!(
+            "Sending response: {} \r\n {}",
+            response.status,
+            response.body.unwrap_or_default()
+        );
+
+        self.stream.write_all(&bytes).unwrap();
         Ok(())
     }
 
@@ -104,7 +134,7 @@ impl HttpServerClient for HttpV11ServerClient {
 
 pub struct HttpV11Server {
     port: u16,
-    status: ServerStatus,
+    status: Arc<Mutex<ServerStatus>>,
     clients: Arc<Mutex<Vec<HttpV11ServerClient>>>,
     address: IpAddr,
     tcp_listener: TcpListener,
@@ -113,55 +143,79 @@ pub struct HttpV11Server {
 
 impl HttpServer for HttpV11Server {
     fn start(&mut self) -> Result<(), String> {
-        if self.status == ServerStatus::Running {
+        if self.status.lock().unwrap().clone() == ServerStatus::Running {
             return Err("Server is already running".to_string());
         }
 
-        self.status = ServerStatus::Starting;
+        *self.status.lock().unwrap() = ServerStatus::Starting;
         // Implementation for starting the HTTP/1.1 server
-        self.status = ServerStatus::Running;
+        println!("Starting HTTP/1.1 server on {}:{}", self.address, self.port);
+
+        // Bind to the specified address and port
         self.tcp_listener = TcpListener::bind((self.address, self.port)).map_err(|e| e.to_string())?;
         self.clients.lock().unwrap().clear(); // Clear any existing clients
+        self.tcp_listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+
+        *self.status.lock().unwrap() = ServerStatus::Running;
 
         //Start listening for incoming connections on a separate thread
         let listener = self.tcp_listener.try_clone().map_err(|e| e.to_string())?;
         let clients_arc = Arc::clone(&self.clients);
         let address = self.address;
         let port = self.port;
+        let status = Arc::clone(&self.status);
         self.server_thread = Some(std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
-                        println!("New client connected: {:?}", stream.peer_addr());
-                        let mut client = HttpV11ServerClient::new(address, port, stream);
-                        client.connected = true; // Mark client as connected
-                        // Handle the client in a separate thread or process
-                        match client.receive_request() {
-                            Ok(request) => {
-                                println!("Received request: {} {}", request.method, request.path);
-                                // Here you would typically process the request and send a response
-                                let response = HttpResponse {
-                                    status: HttpStatus {
-                                        code: 200,
-                                        text: "OK".to_string(),
-                                    },
-                                    headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
-                                    body: Some("Hello, World!".to_string()),
-                                };
-                                if let Err(e) = client.send_response(response) {
-                                    eprintln!("Failed to send response: {}", e);
+            loop {
+                if *status.lock().unwrap() != ServerStatus::Running {
+                    println!("Server is stopping, exiting listener thread.");
+                    break;
+                }
+
+                match listener.accept() {
+                    Ok((stream, addr)) => {
+                        println!("Accepted connection from {}", addr);
+                        let client = HttpV11ServerClient::new(address, port, stream);
+
+                        // Mark the client as connected
+                        let mut client = client;
+                        client.connected = true;
+
+                        clients_arc.lock().unwrap().push(client.clone());
+
+                        // Spawn a new thread to handle the client connection
+                        std::thread::spawn(move || {
+                            // Handle the client connection in a separate thread
+                            while client.is_connected().unwrap() {
+                                match client.receive_request() {
+                                    Ok(request) => {
+                                        println!("Received request: {}", request);
+                                        // Here you would handle the request and send a response
+                                        let response = HttpResponse {
+                                            status: HttpStatus::new(StatusCode::Ok.code(), StatusCode::Ok.text().to_string()),
+                                            headers: vec![("Content-Type".to_string(), TextPlain.to_string())],
+                                            body: Some("Hello, World!".to_string()),
+                                        };
+                                        if let Err(e) = client.send_response(response) {
+                                            eprintln!("Failed to send response: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to receive request: {}", e);
+                                        break; // Exit loop on error
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("Failed to receive request: {}", e);
-                                if let Err(disconnect_err) = client.disconnect() {
-                                    eprintln!("Failed to disconnect client: {}", disconnect_err);
-                                }
-                            }
-                        }
-                        clients_arc.lock().unwrap().push(client);
+                        });
                     }
-                    Err(e) => eprintln!("Failed to accept connection: {}", e),
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            // No connections available, continue to accept more
+                            std::thread::sleep(std::time::Duration::from_millis(100)); // Sleep to avoid busy waiting
+                            continue;
+                        } else {
+                            eprintln!("Failed to accept connection: {}", e);
+                        }
+                    }
                 }
             }
         }));
@@ -169,24 +223,16 @@ impl HttpServer for HttpV11Server {
     }
 
     fn stop(&mut self) -> Result<(), String> {
-        // Implementation for stopping the HTTP/1.1 server
-        // Here we would close the TcpListener and clean up resources
-        self.status = ServerStatus::Stopped;
-        self.tcp_listener
-            .set_nonblocking(false)
-            .map_err(|e| e.to_string())?;
-        self.tcp_listener
-            .incoming()
-            .for_each(|_stream| {
-                // Close the stream or handle cleanup if necessary
-                _stream.unwrap();
-            });
-        self.clients.lock().unwrap().clear(); // Clear all clients
+        *self.status.lock().unwrap() = ServerStatus::Stopped;
+
+        // Join the server thread
         if let Some(thread) = self.server_thread.take() {
-            if thread.join().is_err() {
-                return Err("Failed to join server thread".to_string());
-            }
+            thread.join().map_err(|_| "Failed to join server thread".to_string())?;
         }
+
+        // Clear client list
+        self.clients.lock().unwrap().clear();
+
         Ok(())
     }
 
@@ -195,11 +241,11 @@ impl HttpServer for HttpV11Server {
     }
 
     fn status(&self) -> Result<ServerStatus, String> {
-        Ok(self.status.clone())
+        Ok(self.status.lock().unwrap().clone())
     }
 
     fn is_running(&self) -> Result<bool, String> {
-        Ok(self.status == ServerStatus::Running)
+        Ok(self.status.lock().unwrap().clone() == ServerStatus::Running)
     }
 }
 
@@ -207,7 +253,7 @@ impl HttpV11Server {
     pub fn new(port: u16, address: IpAddr) -> Self {
         HttpV11Server {
             port,
-            status: ServerStatus::Stopped,
+            status: Arc::new(Mutex::new(ServerStatus::Stopped)),
             clients: Arc::new(Mutex::new(Vec::new())),
             address,
             tcp_listener: TcpListener::bind((address, 0)).expect("Could not bind to address"),

@@ -340,8 +340,60 @@ pub struct HttpRequest {
     pub body: Option<String>,
 }
 
+impl Display for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut request_text = format!("{} {} HTTP/1.1\r\n", self.method, self.path);
+        for (key, value) in &self.headers {
+            request_text.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        request_text.push_str("\r\n"); // end of headers
+        if let Some(body) = &self.body {
+            request_text.push_str(body);
+        }
+        write!(f, "{}", request_text)
+    }
+}
+
 pub struct HttpResponse {
     pub status: HttpStatus,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+}
+
+impl HttpResponse {
+    pub fn clone(&self) -> HttpResponse {
+        HttpResponse {
+            status: self.status.clone(),
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+        }
+    }
+}
+
+impl HttpResponse {
+    pub fn get_bytes(&self) -> Vec<u8> {
+        let mut response_text = format!("{} {}\r\n", self.status.code, self.status.text);
+        for (key, value) in &self.headers {
+            response_text.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        response_text.push_str("\r\n"); // end of headers
+        if let Some(body) = &self.body {
+            response_text.push_str(body);
+        }
+        response_text.into_bytes()
+    }
+}
+
+impl Display for HttpResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut response_text = format!("{} {}\r\n", self.status.code, self.status.text);
+        for (key, value) in &self.headers {
+            response_text.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        response_text.push_str("\r\n"); // end of headers
+        if let Some(body) = &self.body {
+            response_text.push_str(body);
+        }
+        write!(f, "{}", response_text)
+    }
 }
