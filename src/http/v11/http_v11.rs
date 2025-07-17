@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use crate::http::server::ServerStatus;
+use crate::http::server::{HttpMapping, ServerStatus};
 use crate::http::server::HttpServer;
 use crate::http::server::HttpServerClient;
 use crate::http::shared::{HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
@@ -139,11 +139,12 @@ pub struct HttpV11Server {
     address: IpAddr,
     tcp_listener: TcpListener,
     server_thread: Option<std::thread::JoinHandle<()>>,
+    mappings: Arc<Mutex<Vec<Box<dyn HttpMapping + Send + Sync>>>>,
 }
 
 impl HttpServer for HttpV11Server {
     fn start(&mut self) -> Result<(), String> {
-        if self.status.lock().unwrap().clone() == ServerStatus::Running {
+        if *self.status.lock().unwrap() == ServerStatus::Running {
             return Err("Server is already running".to_string());
         }
 
@@ -154,67 +155,93 @@ impl HttpServer for HttpV11Server {
         // Bind to the specified address and port
         self.tcp_listener = TcpListener::bind((self.address, self.port)).map_err(|e| e.to_string())?;
         self.clients.lock().unwrap().clear(); // Clear any existing clients
-        self.tcp_listener.set_nonblocking(true).map_err(|e| e.to_string())?;
 
         *self.status.lock().unwrap() = ServerStatus::Running;
 
         //Start listening for incoming connections on a separate thread
         let listener = self.tcp_listener.try_clone().map_err(|e| e.to_string())?;
-        let clients_arc = Arc::clone(&self.clients);
-        let address = self.address;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let address = self.address.clone();
         let port = self.port;
+        // 1) Clone the Arc for `status` and `mappings` so we can use them in the thread:
         let status = Arc::clone(&self.status);
+        let mappings = Arc::clone(&self.mappings);
+        // 2) Now spawn your listener thread without touching `self` anymore:
         self.server_thread = Some(std::thread::spawn(move || {
             loop {
+                // We only refer to `status` (the Arc), never `self`:
                 if *status.lock().unwrap() != ServerStatus::Running {
-                    println!("Server is stopping, exiting listener thread.");
+                    println!("Stopping listener thread.");
                     break;
                 }
 
                 match listener.accept() {
                     Ok((stream, addr)) => {
-                        println!("Accepted connection from {}", addr);
-                        let client = HttpV11ServerClient::new(address, port, stream);
+                        println!("Accepted {}", addr);
 
-                        // Mark the client as connected
-                        let mut client = client;
-                        client.connected = true;
+                        let mappings = Arc::clone(&mappings);
+                        let client   = HttpV11ServerClient::new(address.clone(), port, stream);
 
-                        clients_arc.lock().unwrap().push(client.clone());
-
-                        // Spawn a new thread to handle the client connection
                         std::thread::spawn(move || {
-                            // Handle the client connection in a separate thread
-                            while client.is_connected().unwrap() {
+                            let mut client = client; // if you need mut
+                            while client.is_connected().unwrap_or(false) {
                                 match client.receive_request() {
                                     Ok(request) => {
-                                        println!("Received request: {}", request);
-                                        // Here you would handle the request and send a response
-                                        let response = HttpResponse {
-                                            status: HttpStatus::new(StatusCode::Ok.code(), StatusCode::Ok.text().to_string()),
-                                            headers: vec![("Content-Type".to_string(), TextPlain.to_string())],
-                                            body: Some("Hello, World!".to_string()),
-                                        };
-                                        if let Err(e) = client.send_response(response) {
-                                            eprintln!("Failed to send response: {}", e);
+                                        println!("Got: {}", request);
+                                        let mut handled = false;
+
+                                        for mapping in mappings.lock().unwrap().iter() {
+                                            if mapping.matches_url(&request.path)
+                                                && mapping.matches_method(&request.method)
+                                            {
+                                                handled = true;
+                                                match mapping.handle_request(&request) {
+                                                    Ok(resp) => {
+                                                        if let Err(e) = client.send_response(resp) {
+                                                            eprintln!("send_response: {}", e);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("handler error: {}", e);
+                                                        let err = HttpResponse::new(
+                                                            StatusCode::InternalServerError,
+                                                            vec![("Content-Type".into(), TextPlain.to_string())],
+                                                            Some("Internal Server Error".into()),
+                                                        );
+                                                        let _ = client.send_response(err);
+                                                    }
+                                                }
+                                                break;
+                                            }
                                         }
+
+                                        if !handled {
+                                            let not_found = HttpResponse::new(
+                                                StatusCode::NotFound,
+                                                vec![("Content-Type".into(), TextPlain.to_string())],
+                                                Some("Not Found".into()),
+                                            );
+                                            let _ = client.send_response(not_found);
+                                        }
+
+                                        break; // one request per connection
                                     }
                                     Err(e) => {
-                                        eprintln!("Failed to receive request: {}", e);
-                                        break; // Exit loop on error
+                                        eprintln!("receive_request: {}", e);
+                                        break;
                                     }
                                 }
                             }
                         });
                     }
+
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // no pending connections
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
+                    }
                     Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            // No connections available, continue to accept more
-                            std::thread::sleep(std::time::Duration::from_millis(100)); // Sleep to avoid busy waiting
-                            continue;
-                        } else {
-                            eprintln!("Failed to accept connection: {}", e);
-                        }
+                        eprintln!("accept error: {}", e);
                     }
                 }
             }
@@ -254,6 +281,7 @@ impl HttpV11Server {
         HttpV11Server {
             port,
             status: Arc::new(Mutex::new(ServerStatus::Stopped)),
+            mappings: Arc::new(Mutex::new(Vec::new())),
             clients: Arc::new(Mutex::new(Vec::new())),
             address,
             tcp_listener: TcpListener::bind((address, 0)).expect("Could not bind to address"),

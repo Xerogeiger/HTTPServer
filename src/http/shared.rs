@@ -159,6 +159,10 @@ impl StatusCode {
         }
     }
 
+    pub fn status(&self) -> HttpStatus {
+        HttpStatus::new(self.code(), self.text().to_string())
+    }
+
     pub fn from_code(code: u16) -> Option<StatusCode> {
         match code {
             200 => Some(StatusCode::Ok),
@@ -340,6 +344,17 @@ pub struct HttpRequest {
     pub body: Option<String>,
 }
 
+impl Clone for HttpRequest {
+    fn clone(&self) -> Self {
+        HttpRequest {
+            method: self.method.clone(),
+            path: self.path.clone(),
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+        }
+    }
+}
+
 impl Display for HttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut request_text = format!("{} {} HTTP/1.1\r\n", self.method, self.path);
@@ -358,6 +373,16 @@ pub struct HttpResponse {
     pub status: HttpStatus,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+}
+
+impl HttpResponse {
+    pub(crate) fn new(p0: StatusCode, p1: Vec<(String, String)>, p2: Option<String>) -> HttpResponse {
+        HttpResponse {
+            status: p0.status(),
+            headers: p1,
+            body: p2,
+        }
+    }
 }
 
 impl HttpResponse {
