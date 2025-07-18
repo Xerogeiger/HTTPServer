@@ -1,4 +1,6 @@
 use std::fmt::Display;
+use std::io;
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use crate::http::client::HttpClient;
 use crate::http::server::HttpServer;
@@ -438,11 +440,19 @@ pub struct HttpResponse {
 }
 
 impl HttpResponse {
-    pub(crate) fn new(p0: StatusCode, p1: Vec<(String, String)>, p2: Option<String>) -> HttpResponse {
+    pub fn from_status(status: StatusCode, headers: Vec<(String, String)>, body: Option<String>) -> HttpResponse {
         HttpResponse {
-            status: p0.status(),
-            headers: p1,
-            body: p2,
+            status: status.status(),
+            headers,
+            body,
+        }
+    }
+
+    pub fn new(status: HttpStatus, headers: Vec<(String, String)>, body: Option<String>) -> Self {
+        HttpResponse {
+            status,
+            headers,
+            body,
         }
     }
 }
@@ -493,4 +503,28 @@ impl Display for HttpResponse {
         response_text.push_str("\r\n"); // end of headers
         write!(f, "{}", response_text.to_string())
     }
+}
+
+pub fn write_chunked<W: Write>(stream: &mut W, mut data: &[u8]) -> io::Result<()> {
+    const CHUNK_SIZE: usize = 1024;
+
+    while !data.is_empty() {
+        // 1) How many bytes we'll write in this chunk
+        let this_size = data.len().min(CHUNK_SIZE);
+
+        // 2) Write the chunk‐size in hex, + CRLF
+        write!(stream, "{:X}\r\n", this_size)?;
+
+        // 3) Write the chunk‐data + CRLF
+        stream.write_all(&data[..this_size])?;
+        stream.write_all(b"\r\n")?;
+
+        // 4) Advance our window
+        data = &data[this_size..];
+    }
+
+    // 5) Final zero‐length chunk to signal “done”
+    stream.write_all(b"0\r\n\r\n")?;
+    stream.flush()?;
+    Ok(())
 }

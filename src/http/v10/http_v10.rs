@@ -45,7 +45,7 @@ impl HttpClient for HttpV10Client {
         self.port
     }
 
-    fn send_request(&self, req: HttpRequest) -> Result<HttpResponse, String> {
+    fn send_request(&mut self, req: HttpRequest) -> Result<HttpResponse, String> {
         let mut req = req.clone();
         req.headers.push(("Host".to_string(), format!("{}:{}", self.host, self.port)));
         req.headers.push(("Connection".to_string(), "close".to_string()));
@@ -69,7 +69,7 @@ impl HttpClient for HttpV10Client {
         self.receive_response(&mut stream)
     }
 
-    fn receive_response(&self, stream: &mut TcpStream) -> Result<HttpResponse, String> {
+    fn receive_response(&self, stream: &TcpStream) -> Result<HttpResponse, String> {
         let mut reader = BufReader::new(stream);
         let mut status_line = String::new();
         reader.read_line(&mut status_line).map_err(|e| format!("Failed to read status line: {}", e))?;

@@ -4,6 +4,7 @@ use crate::http::server::FileMapping;
 use crate::http::shared::HttpVersion::V10;
 
 mod http;
+mod decode;
 
 fn main() {
     let mut server = V11.create_server(1234).unwrap();
@@ -19,7 +20,7 @@ fn main() {
     //Create an http 1.0 client
     let client = V10.create_client(IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 1234);
     match client {
-        Ok(c) => {
+        Ok(mut c) => {
             c.get("/").expect("Failed to get");
         },
         Err(e) => eprintln!("Failed to create client: {}", e),

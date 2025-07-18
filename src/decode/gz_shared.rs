@@ -1,0 +1,262 @@
+/// For length codes 257–285:
+/// (base length, # extra bits)
+pub const LENGTH_BASE: [(usize, u8); 29] = [
+    (3, 0),  (4, 0),  (5, 0),  (6, 0),   // 257–260
+    (7, 0),  (8, 0),  (9, 0),  (10, 0),  // 261–264
+    (11, 1), (13, 1), (15, 1), (17, 1),  // 265–268
+    (19, 2), (23, 2), (27, 2), (31, 2),  // 269–272
+    (35, 3), (43, 3), (51, 3), (59, 3),  // 273–276
+    (67, 4), (83, 4), (99, 4), (115, 4), // 277–280
+    (131, 5),(163, 5),(195, 5),(227, 5), // 281–284
+    (258, 0),                         // 285 (no extra bits)
+];
+
+/// For distance codes 0–31:
+/// (base distance, # extra bits)
+pub const DIST_BASE: [(usize, u8); 30] = [
+    (1, 0),   (2, 0),   (3, 0),   (4, 0),   // 0–3
+    (5, 1),   (7, 1),   (9, 2),   (13, 2),  // 4–7
+    (17, 3),  (25, 3),  (33, 4),  (49, 4),  // 8–11
+    (65, 5),  (97, 5),  (129, 6), (193, 6), // 12–15
+    (257, 7), (385, 7), (513, 8), (769, 8), // 16–19
+    (1025, 9),(1537, 9),(2049,10),(3073,10),// 20–23
+    (4097,11),(6145,11),(8193,12),(12289,12),// 24–27
+    (16385,13),(24577,13)
+];
+
+/// Order for reading code‑length code lengths
+pub const CODE_LENGTH_ORDER: [usize; 19] = [
+    16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
+];
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+pub enum DeflateBlockType {
+    Stored = 0,
+    FixedHuffman = 1,
+    DynamicHuffman = 2,
+}
+
+pub struct GzHeader {
+    pub magic_number: u16,
+    pub compression_method: u8,
+    pub flags: u8,
+    pub modification_time: u32,
+    pub extra_flags: u8,
+    pub operating_system: u8,
+
+    pub is_ascii: bool,
+    pub has_extra_field: bool,
+    pub has_filename: bool,
+    pub has_comment: bool,
+    pub has_crc: bool,
+
+    pub filename: Option<String>,
+    pub extra_field: Option<Vec<u8>>,
+    pub comment: Option<String>,
+    pub crc32: u32,
+    pub isize: u32,
+}
+
+impl GzHeader {
+    pub fn new() -> Self {
+        GzHeader {
+            magic_number: 0x8b1f,
+            compression_method: 8, // Deflate
+            flags: 0,
+            modification_time: 0,
+            extra_flags: 0,
+            operating_system: 255, // Unknown
+
+            is_ascii: false,
+            has_extra_field: false,
+            has_filename: false,
+            has_comment: false,
+            has_crc: false,
+
+            filename: None,
+            extra_field: None,
+            comment: None,
+            crc32: 0,
+            isize: 0,
+        }
+    }
+
+    pub fn set_flags(&mut self, flags: u8) {
+        self.flags = flags;
+        self.is_ascii = (flags & 0x01) != 0;
+        self.has_extra_field = (flags & 0x04) != 0;
+        self.has_filename = (flags & 0x08) != 0;
+        self.has_comment = (flags & 0x10) != 0;
+        self.has_crc = (flags & 0x02) != 0;
+    }
+
+    pub fn set_filename(&mut self, filename: String) {
+        self.filename = Some(filename);
+        self.has_filename = true;
+    }
+
+    pub fn set_extra_field(&mut self, extra_field: Vec<u8>) {
+        self.extra_field = Some(extra_field);
+        self.has_extra_field = true;
+    }
+
+    pub fn set_comment(&mut self, comment: String) {
+        self.comment = Some(comment);
+        self.has_comment = true;
+    }
+
+    pub fn set_crc32(&mut self, crc32: u32) {
+        self.crc32 = crc32;
+        self.has_crc = true;
+    }
+
+    pub fn set_isize(&mut self, isize: u32) {
+        self.isize = isize;
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.magic_number == 0x8b1f && self.compression_method == 8
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut header = Vec::new();
+        header.extend(&self.magic_number.to_le_bytes());
+        header.push(self.compression_method);
+        header.push(self.flags);
+        header.extend(&self.modification_time.to_le_bytes());
+        header.push(self.extra_flags);
+        header.push(self.operating_system);
+
+        if self.has_filename {
+            if let Some(ref filename) = self.filename {
+                header.extend(filename.as_bytes());
+                header.push(0); // Null terminator
+            }
+        }
+
+        if self.has_extra_field {
+            if let Some(ref extra_field) = self.extra_field {
+                header.extend(extra_field);
+            }
+        }
+
+        if self.has_comment {
+            if let Some(ref comment) = self.comment {
+                header.extend(comment.as_bytes());
+                header.push(0); // Null terminator
+            }
+        }
+
+        print!("Header Bytes: ");
+        for byte in &header {
+            print!("{:02x} ", byte);
+        }
+        println!();
+
+        header
+    }
+}
+
+pub fn generate_crc32_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let polynomial: u32 = 0xEDB88320;
+    for i in 0..256 {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            if c & 1 != 0 {
+                c = polynomial ^ (c >> 1);
+            } else {
+                c = c >> 1;
+            }
+        }
+        table[i as usize] = c;
+    }
+    table
+}
+
+/// Build a canonical code→symbol lookup table.
+/// Returns (map, max_code_length).
+pub fn build_codes(lens: &[u8]) -> (std::collections::HashMap<u32, usize>, u8) {
+    // 1) Count how many codes of each length
+    let mut counts = std::collections::BTreeMap::new();
+    for &l in lens { if l > 0 { *counts.entry(l).or_insert(0usize) += 1 } }
+    // 2) For each length, assign starting codes
+    let mut code = 0u32;
+    let mut next_code = std::collections::BTreeMap::new();
+    for (&len, &cnt) in &counts {
+        code <<= 1;                    // shift to this length
+        next_code.insert(len, code);
+        code += cnt as u32;            // reserve block
+    }
+    // 3) Build map: for each symbol, if its length>0, assign code and increment
+    let mut table = std::collections::HashMap::new();
+    let mut max_len = 0;
+    for (symbol, &len) in lens.iter().enumerate() {
+        if len > 0 {
+            let entry = next_code.get_mut(&len).unwrap();
+            table.insert(*entry, symbol);
+            *entry += 1;
+            max_len = max_len.max(len);
+        }
+    }
+    (table, max_len)
+}
+
+/// Given a slice of code‐lengths `lens` (in bits) for each symbol,
+/// produce a Vec of Option<(code, length)> where `code` is the
+/// canonical Huffman code (LSB‐first) for that symbol.
+pub fn gen_codes(lens: &[u8]) -> Vec<Option<(u32, u8)>> {
+    // 1) Count how many codes of each length there are
+    let max_bits = *lens.iter().max().unwrap() as usize;
+    let mut bl_count = vec![0usize; max_bits + 1];
+    for &l in lens {
+        if l != 0 {
+            bl_count[l as usize] += 1;
+        }
+    }
+
+    // 2) Determine the first code for each length
+    //    code = 0
+    //    for bits = 1..=max_bits:
+    //      code = (code + bl_count[bits-1]) << 1
+    //      next_code[bits] = code
+    let mut next_code = vec![0u32; max_bits + 1];
+    let mut code = 0u32;
+    for bits in 1..=max_bits {
+        code = (code + bl_count[bits - 1] as u32) << 1;
+        next_code[bits] = code;
+    }
+
+    // 3) Assign codes to symbols in *symbol order*
+    //    (i.e. ascending symbol index)
+    let mut codes = Vec::with_capacity(lens.len());
+    for &length in lens {
+        if length == 0 {
+            codes.push(None);
+        } else {
+            let c = next_code[length as usize];
+            codes.push(Some((c, length)));
+            next_code[length as usize] += 1;
+        }
+    }
+
+    codes
+}
+
+pub fn fixed_lit_len_lens() -> [u8; 288] {
+    let mut lens = [0u8; 288];
+    // 0–143 : 8 bits
+    for i in 0..=143 { lens[i] = 8; }
+    // 144–255 : 9 bits
+    for i in 144..=255 { lens[i] = 9; }
+    // 256–279 : 7 bits
+    for i in 256..=279 { lens[i] = 7; }
+    // 280–287 : 8 bits
+    for i in 280..=287 { lens[i] = 8; }
+    lens
+}
+
+pub fn fixed_dist_lens() -> [u8; 32] {
+    [5u8; 32]
+}

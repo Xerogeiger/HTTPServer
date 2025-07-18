@@ -1,12 +1,212 @@
-use std::io::{Error, Read, Write};
+use std::io;
+use std::io::{BufRead, BufReader, Error, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use crate::http::server::{HttpMapping, ServerStatus};
 use crate::http::server::HttpServer;
 use crate::http::server::{HttpServerClient};
-use crate::http::shared::{HttpRequest, HttpResponse, RequestMethod, StatusCode};
+use crate::http::shared::{write_chunked, HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
 use crate::http::shared::RequestMethod::Get;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use crate::decode::gz_decoder::GzDecoder;
+use crate::http::client::HttpClient;
 use crate::http::shared::ContentType::TextPlain;
+
+pub struct HttpV11Client {
+    host: IpAddr,
+    port: u16,
+    default_headers: Vec<(String, String)>,
+    stream: Option<TcpStream>,
+    keep_alive: bool,
+}
+
+impl HttpV11Client {
+    /// Create a new client; connection is established lazily.
+    pub fn new(host: IpAddr, port: u16) -> Self {
+        Self {
+            host,
+            port,
+            default_headers: Vec::new(),
+            stream: None,
+            keep_alive: true,
+        }
+    }
+
+    /// Ensure we have a live connection (or reconnect).
+    fn ensure_connection(&mut self) -> io::Result<&mut TcpStream> {
+        match &self.stream {
+            Some(_) if self.keep_alive => Ok(self.stream.as_mut().unwrap()),
+            _ => {
+                let addr = format!("{}:{}", self.host, self.port);
+                let stream = TcpStream::connect(addr)?;
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                self.stream = Some(stream);
+                Ok(self.stream.as_mut().unwrap())
+            }
+        }
+    }
+
+    /// Read a chunked transfer-encoded body into a Vec<u8>.
+    fn read_chunked_body(reader: &mut BufReader<&TcpStream>) -> io::Result<Vec<u8>> {
+        let mut body = Vec::new();
+        loop {
+            // Read the chunk-size line
+            let mut size_line = String::new();
+            reader.read_line(&mut size_line)?;
+            let size = usize::from_str_radix(size_line.trim(), 16)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if size == 0 {
+                // Consume trailing CRLF
+                let mut crlf = [0; 2];
+                reader.read_exact(&mut crlf)?;
+                break;
+            }
+            let mut chunk = vec![0; size];
+            reader.read_exact(&mut chunk)?;
+            body.extend_from_slice(&chunk);
+            // consume CRLF
+            let mut crlf = [0; 2];
+            reader.read_exact(&mut crlf)?;
+        }
+        Ok(body)
+    }
+}
+
+impl HttpClient for HttpV11Client {
+    fn set_headers(&mut self, headers: Vec<(String, String)>) {
+        self.default_headers = headers;
+    }
+
+    fn get_headers(&self) -> Vec<(String, String)> {
+        self.default_headers.clone()
+    }
+
+    fn set_host(&mut self, host: IpAddr) {
+        self.host = host;
+        self.stream = None; // reset connection
+    }
+
+    fn get_host(&self) -> IpAddr {
+        self.host
+    }
+
+    fn set_port(&mut self, port: u16) {
+        self.port = port;
+        self.stream = None;
+    }
+
+    fn get_port(&self) -> u16 {
+        self.port
+    }
+
+    fn send_request(&mut self, req: HttpRequest) -> Result<HttpResponse, String> {
+        // Mutable borrow to manage connection & write
+        let mut_self = self.ensure_connection().map_err(|e| e.to_string())?;
+        let mut headers = self.default_headers.clone();
+        headers.push(("Host".into(), format!("{}:{}", self.host, self.port)));
+        headers.push(("Connection".into(), "keep-alive".into()));
+        headers.push(("User-Agent".into(), "RustHttpClient/1.1".into()));
+
+        let mut request = req.clone();
+        request.headers = headers;
+
+        // Build request bytes
+        let mut raw = format!("{} {} HTTP/1.1\r\n", request.method, request.path);
+        for (k, v) in &request.headers {
+            raw.push_str(&format!("{}: {}\r\n", k, v));
+        }
+        raw.push_str("\r\n");
+        if let Some(body) = request.body {
+            raw.push_str(&body);
+        }
+
+        // Send over the connection
+        let addr = format!("{}:{}", self.host, self.port);
+        let mut stream: TcpStream = TcpStream::connect(addr).expect("Failed to connect");
+
+        stream.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
+        stream.flush().map_err(|e| e.to_string())?;
+
+        // Read and parse response
+        self.receive_response(&stream)
+    }
+
+    fn receive_response(&self, stream: &TcpStream) -> Result<HttpResponse, String> {
+        let mut reader = BufReader::new(stream);
+        // 1) Status line
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line).map_err(|e| e.to_string())?;
+        let mut parts = status_line.trim_end().splitn(3, ' ');
+        let _version = parts.next().ok_or("Malformed status line")?;
+        let code: u16 = parts
+            .next()
+            .ok_or("No status code")?
+            .parse()
+            .map_err(|_| "Invalid status code")?;
+        let reason = parts.next().unwrap_or("").to_string();
+
+        // 2) Headers with folding
+        let mut headers: Vec<(String, String)> = Vec::new();
+        let mut last_key: Option<String> = None;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).map_err(|e| e.to_string())?;
+            let trimmed = line.trim_end();
+            if trimmed.is_empty() {
+                break;
+            }
+            if trimmed.starts_with(' ') || trimmed.starts_with('\t') {
+                // continuation
+                if let Some(k) = &last_key {
+                    if let Some((_, v)) = headers.last_mut() {
+                        v.push(' ');
+                        v.push_str(trimmed.trim());
+                    }
+                }
+            } else if let Some((k, v)) = trimmed.split_once(':') {
+                let key = k.trim().to_string();
+                let val = v.trim().to_string();
+                headers.push((key.clone(), val));
+                last_key = Some(key);
+            }
+        }
+
+        // 3) Body
+        let mut body_bytes = Vec::new();
+        let is_chunked = headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.eq_ignore_ascii_case("chunked"));
+        if is_chunked {
+            body_bytes = HttpV11Client::read_chunked_body(&mut reader).map_err(|e| e.to_string())?;
+        } else if let Some((_, v)) = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        {
+            let len: usize = v.parse().map_err(|_| "Invalid Content-Length")?;
+            let mut buf = vec![0; len];
+            reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
+            body_bytes = buf;
+        } else {
+            // read until EOF
+            reader.read_to_end(&mut body_bytes).map_err(|e| e.to_string())?;
+        }
+
+        // 4) Handle gzip
+        let mut final_body = body_bytes;
+        if headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("content-encoding") && v.eq_ignore_ascii_case("gzip"))
+        {
+            let d = GzDecoder::load(&final_body[..]);
+            let decompressed = d.unwrap().decompress();
+            final_body = decompressed.unwrap();
+        }
+
+        let body_str = String::from_utf8_lossy(&final_body).to_string();
+        Ok(HttpResponse::new(HttpStatus::new(code, reason), headers, Some(body_str)))
+    }
+}
 
 struct HttpV11ServerClient {
     ip_address: IpAddr,
@@ -115,16 +315,42 @@ impl HttpServerClient for HttpV11ServerClient {
 
         let mut r = response.clone();
 
-        r.headers.push(("Content-Length".to_string(), r.body.clone().unwrap().len().to_string()));
+        r.headers.push(("Connection".to_string(), "keep-alive".to_string()));
 
-        let bytes = r.get_bytes();
+        let chunked = !r.body.is_none() && r.body.clone().unwrap_or_default().len() > 1024; // Arbitrary threshold for chunked encoding
+
+        if chunked {
+            r.headers.push(("Transfer-Encoding".to_string(), "chunked".to_string()));
+        } else {
+            let content_length = r.body.as_ref().map_or(0, |b| b.len());
+            r.headers.push(("Content-Length".to_string(), content_length.to_string()));
+        }
+
+        let status_line = format!("HTTP/1.1 {} {}\r\n", r.status.code, r.status.text);
+        let mut headers = String::new();
+        for (key, value) in &r.headers {
+            headers.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        headers.push_str("\r\n"); // End of headers
+
+        let response_text: String;
+
+        if(chunked) {
+            response_text = format!("{}{}", status_line, headers);
+            self.stream.write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
+            let body = r.body.clone().unwrap_or_default();
+            write_chunked(&mut self.stream, body.as_ref()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
+        } else {
+            let body = r.body.clone().unwrap_or_default();
+            response_text = format!("{}{}{}", status_line, headers, body.to_string());
+            self.stream.write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response: {}", e))?;
+        }
 
         println!(
             "Sending response: {}",
-            response
+            r
         );
 
-        self.stream.write_all(&bytes).unwrap();
         Ok(())
     }
 
@@ -408,7 +634,7 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                     // Validate the request
                     if let Err(e) = validate_request(&request.clone().expect("Request should not be None")) {
                         eprintln!("Invalid request: {}", e);
-                        let err = HttpResponse::new(
+                        let err = HttpResponse::from_status(
                             StatusCode::BadRequest,
                             vec![("Content-Type".into(), TextPlain.to_string())],
                             Some(e),
@@ -434,7 +660,7 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                                 }
                                 Err(e) => {
                                     eprintln!("handler error: {}", e);
-                                    let err = HttpResponse::new(
+                                    let err = HttpResponse::from_status(
                                         StatusCode::InternalServerError,
                                         vec![("Content-Type".into(), TextPlain.to_string())],
                                         Some("Internal Server Error".into()),
@@ -446,7 +672,7 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                     }
 
                     if !handled {
-                        let not_found = HttpResponse::new(
+                        let not_found = HttpResponse::from_status(
                             StatusCode::NotFound,
                             vec![("Content-Type".into(), TextPlain.to_string())],
                             Some("Not Found".into()),
@@ -463,7 +689,7 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                 }
                 Err(e) => {
                     eprintln!("receive_request error: {}", e);
-                    let err = HttpResponse::new(
+                    let err = HttpResponse::from_status(
                         StatusCode::InternalServerError,
                         vec![("Content-Type".into(), TextPlain.to_string())],
                         Some("Internal Server Error".into()),

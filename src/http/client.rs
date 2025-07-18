@@ -1,6 +1,6 @@
 use std::net::{IpAddr, TcpStream};
 use crate::http::shared::{HttpRequest, HttpResponse};
-use crate::http::shared::RequestMethod::{Delete, Get, Post, Put};
+use crate::http::shared::RequestMethod::{Delete, Get, Head, Options, Post, Put};
 
 pub(crate) trait HttpClient {
     fn set_headers(&mut self, headers: Vec<(String, String)>);
@@ -12,10 +12,10 @@ pub(crate) trait HttpClient {
     fn set_port(&mut self, port: u16);
     fn get_port(&self) -> u16;
 
-    fn send_request(&self, request: HttpRequest) -> Result<HttpResponse, String>;
-    fn receive_response(&self, stream: &mut TcpStream) -> Result<HttpResponse, String>;
+    fn send_request(&mut self, request: HttpRequest) -> Result<HttpResponse, String>;
+    fn receive_response(&self, stream: &TcpStream) -> Result<HttpResponse, String>;
 
-    fn get(&self, url: &str) -> Result<HttpResponse, String> {
+    fn get(&mut self, url: &str) -> Result<HttpResponse, String> {
         let req = HttpRequest {
             method: Get,
             path: url.into(),
@@ -25,7 +25,7 @@ pub(crate) trait HttpClient {
         self.send_request(req)
     }
 
-    fn post(&self, url: &str, body: Option<String>) -> Result<HttpResponse, String> {
+    fn post(&mut self, url: &str, body: Option<String>) -> Result<HttpResponse, String> {
         let req = HttpRequest {
             method: Post,
             path: url.into(),
@@ -35,7 +35,7 @@ pub(crate) trait HttpClient {
         self.send_request(req)
     }
 
-    fn put(&self, url: &str, body: Option<String>) -> Result<HttpResponse, String> {
+    fn put(&mut self, url: &str, body: Option<String>) -> Result<HttpResponse, String> {
         let req = HttpRequest {
             method: Put,
             path: url.into(),
@@ -45,9 +45,29 @@ pub(crate) trait HttpClient {
         self.send_request(req)
     }
 
-    fn delete(&self, url: &str) -> Result<HttpResponse, String> {
+    fn delete(&mut self, url: &str) -> Result<HttpResponse, String> {
         let req = HttpRequest {
             method: Delete,
+            path: url.into(),
+            headers: self.get_headers(),
+            body: None,
+        };
+        self.send_request(req)
+    }
+
+    fn options(&mut self, url: &str) -> Result<HttpResponse, String> {
+        let req = HttpRequest {
+            method: Options,
+            path: url.into(),
+            headers: self.get_headers(),
+            body: None,
+        };
+        self.send_request(req)
+    }
+
+    fn head(&mut self, url: &str) -> Result<HttpResponse, String> {
+        let req = HttpRequest {
+            method: Head,
             path: url.into(),
             headers: self.get_headers(),
             body: None,
