@@ -186,14 +186,14 @@ fn inflate_to_tokens(data: &[u8]) -> io::Result<Vec<Token>> {
 
 fn decode_symbol(
     br: &mut BitReader,
-    codes: &std::collections::HashMap<u32, usize>,
+    codes: &std::collections::HashMap<(u32, u8), usize>,
     max_len: u8,
 ) -> io::Result<usize> {
     let mut acc = 0u32;
     for bit_len in 1..=max_len {
         let b = br.read_bit()? as u32;
         acc |= b << (bit_len - 1);
-        if let Some(&sym) = codes.get(&acc) {
+        if let Some(&sym) = codes.get(&(acc, bit_len)) {
             return Ok(sym);
         }
     }
@@ -205,9 +205,9 @@ fn decode_symbol(
 fn decode_huffman_data(
     br: &mut BitReader,
     out: &mut Vec<u8>,
-    ll_codes: &std::collections::HashMap<u32,usize>,
+    ll_codes: &std::collections::HashMap<(u32, u8),usize>,
     ll_max: u8,
-    d_codes: &std::collections::HashMap<u32,usize>,
+    d_codes: &std::collections::HashMap<(u32, u8),usize>,
     d_max: u8,
 ) -> io::Result<()> {
     loop {
@@ -428,8 +428,8 @@ mod tests {
         let bits = &[0b00000010]; // bit0=0->sym0, bit1=1->sym1
         let mut br = BitReader::new(bits);
         let mut codes = std::collections::HashMap::new();
-        codes.insert(0, 65); // 'A'
-        codes.insert(1, 66); // 'B'
+        codes.insert((0,1), 65); // 'A'
+        codes.insert((1,1), 66); // 'B'
         let sym1 = decode_symbol(&mut br, &codes, 1).unwrap();
         assert_eq!(sym1, 65);
         let sym2 = decode_symbol(&mut br, &codes, 1).unwrap();
