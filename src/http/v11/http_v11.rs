@@ -12,7 +12,8 @@ struct HttpV11ServerClient {
     ip_address: IpAddr,
     stream: TcpStream,
     port: u16,
-    connected: bool
+    connected: bool,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Clone for HttpV11ServerClient {
@@ -21,7 +22,8 @@ impl Clone for HttpV11ServerClient {
             ip_address: self.ip_address,
             stream: self.stream.try_clone().expect("Failed to clone stream"),
             port: self.port,
-            connected: self.connected
+            connected: self.connected,
+            thread: None,
         }
     }
 }
@@ -119,7 +121,8 @@ impl HttpServerClient for HttpV11ServerClient {
             ip_address,
             port,
             connected: false,
-            stream
+            stream,
+            thread: None,
         }
     }
 
@@ -135,7 +138,7 @@ impl HttpServerClient for HttpV11ServerClient {
 pub struct HttpV11Server {
     port: u16,
     status: Arc<Mutex<ServerStatus>>,
-    clients: Arc<Mutex<Vec<HttpV11ServerClient>>>,
+    clients: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
     address: IpAddr,
     tcp_listener: TcpListener,
     server_thread: Option<std::thread::JoinHandle<()>>,
@@ -166,6 +169,7 @@ impl HttpServer for HttpV11Server {
         // 1) Clone the Arc for `status` and `mappings` so we can use them in the thread:
         let status = Arc::clone(&self.status);
         let mappings = Arc::clone(&self.mappings);
+        let clients = Arc::clone(&self.clients);
         // 2) Now spawn your listener thread without touching `self` anymore:
         self.server_thread = Some(std::thread::spawn(move || {
             loop {
@@ -180,24 +184,24 @@ impl HttpServer for HttpV11Server {
                         println!("Accepted {}", addr);
 
                         let mappings = Arc::clone(&mappings);
-                        let client   = HttpV11ServerClient::new(address.clone(), port, stream);
+                        let mut client   = HttpV11ServerClient::new(address.clone(), port, stream);
+                        client.connected = true; // Mark the client as connected
 
-                        std::thread::spawn(move || {
-                            let mut client = client; // if you need mut
-                            while client.is_connected().unwrap_or(false) {
-                                match client.receive_request() {
+                        let mut thread_client = client.clone();
+                        let thread = std::thread::spawn(move || {
+                            while thread_client.is_connected().unwrap_or(false) {
+                                match thread_client.receive_request() {
                                     Ok(request) => {
                                         println!("Got: {}", request);
                                         let mut handled = false;
 
                                         for mapping in mappings.lock().unwrap().iter() {
                                             if mapping.matches_url(&request.path)
-                                                && mapping.matches_method(&request.method)
-                                            {
+                                                && mapping.matches_method(&request.method) {
                                                 handled = true;
                                                 match mapping.handle_request(&request) {
                                                     Ok(resp) => {
-                                                        if let Err(e) = client.send_response(resp) {
+                                                        if let Err(e) = thread_client.send_response(resp) {
                                                             eprintln!("send_response: {}", e);
                                                         }
                                                     }
@@ -208,7 +212,7 @@ impl HttpServer for HttpV11Server {
                                                             vec![("Content-Type".into(), TextPlain.to_string())],
                                                             Some("Internal Server Error".into()),
                                                         );
-                                                        let _ = client.send_response(err);
+                                                        let _ = thread_client.send_response(err);
                                                     }
                                                 }
                                                 break;
@@ -221,7 +225,7 @@ impl HttpServer for HttpV11Server {
                                                 vec![("Content-Type".into(), TextPlain.to_string())],
                                                 Some("Not Found".into()),
                                             );
-                                            let _ = client.send_response(not_found);
+                                            let _ = thread_client.send_response(not_found);
                                         }
 
                                         break; // one request per connection
@@ -232,7 +236,11 @@ impl HttpServer for HttpV11Server {
                                     }
                                 }
                             }
+
+                            println!("Client disconnected");
                         });
+                        // Add the client thread to the clients list
+                        clients.lock().unwrap().push(thread);
                     }
 
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -250,16 +258,28 @@ impl HttpServer for HttpV11Server {
     }
 
     fn stop(&mut self) -> Result<(), String> {
+        // 1) Signal to the listener thread to exit:
         *self.status.lock().unwrap() = ServerStatus::Stopped;
 
-        // Join the server thread
-        if let Some(thread) = self.server_thread.take() {
-            thread.join().map_err(|_| "Failed to join server thread".to_string())?;
+        // 2) Wait for the listener thread to finish:
+        if let Some(server_thread) = self.server_thread.take() {
+            server_thread
+                .join()
+                .map_err(|_| "Failed to join server thread".to_string())?;
+        }
+        println!("HTTP/1.1 listener thread stopped.");
+
+        // 3) Drain and join *all* of the client‐handler threads in one go:
+        {
+            let mut clients = self.clients.lock().unwrap();
+            for handle in clients.drain(..) {
+                if let Err(err) = handle.join() {
+                    eprintln!("Failed to join client thread: {:?}", err);
+                }
+            }
         }
 
-        // Clear client list
-        self.clients.lock().unwrap().clear();
-
+        println!("All client threads joined. Server fully stopped.");
         Ok(())
     }
 

@@ -71,7 +71,15 @@ impl FileMapping {
 
 impl HttpMapping for FileMapping {
     fn matches_url(&self, url: &str) -> bool {
+        // Check if the URL matches the pattern
+        if self.url == "*" {
+            return true; // Matches all URLs
+        }
+
         let path = url.split(&['?', '#'][..]).next().unwrap_or(url);
+        if self.url == path {
+            return true; // Exact match
+        }
         let pattern_parts: Vec<&str> =
             self.url.trim_matches('/').split('/').collect();
         let url_parts: Vec<&str> =

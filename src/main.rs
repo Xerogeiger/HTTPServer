@@ -22,5 +22,5 @@ fn main() {
     }
 
     // Wait for the server thread to finish
-    // server.stop().expect("Failed to stop server");
+    server.stop().expect("Failed to stop server");
 }
