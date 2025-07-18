@@ -1,9 +1,9 @@
-use std::io::{Read, Write};
+use std::io::{Error, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use crate::http::server::{HttpMapping, ServerStatus};
 use crate::http::server::HttpServer;
 use crate::http::server::{HttpServerClient};
-use crate::http::shared::{HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
+use crate::http::shared::{HttpRequest, HttpResponse, RequestMethod, StatusCode};
 use crate::http::shared::RequestMethod::Get;
 use std::sync::{Arc, Mutex};
 use crate::http::shared::ContentType::TextPlain;
@@ -29,7 +29,7 @@ impl Clone for HttpV11ServerClient {
 }
 
 impl HttpServerClient for HttpV11ServerClient {
-    fn receive_request(&mut self) -> Result<HttpRequest, String> {
+    fn receive_request(&mut self) -> Result<Option<HttpRequest>, String> {
         // Implementation for receiving an HTTP request
         if !self.connected {
             return Err("Client is not connected".to_string());
@@ -58,21 +58,52 @@ impl HttpServerClient for HttpV11ServerClient {
                     })
                     .collect();
 
-                let body = if let Some(body_line) = lines.next() {
-                    Some(body_line.to_string())
+                if(headers.is_empty()) {
+                    return Err("No headers found".to_string());
+                }
+
+                let content_length = headers.iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
+                    .and_then(|(_, v)| v.parse::<usize>().ok())
+                    .unwrap_or(0);
+
+                if content_length == 0 {
+                    // If content length is 0, there is no body
+                    return Ok(Some(HttpRequest {
+                        method: RequestMethod::from_str(&method).unwrap_or(Get),
+                        path,
+                        headers,
+                        body: None,
+                    }));
+                }
+
+                let body = if lines.clone().any(|line| !line.is_empty()) {
+                    // If there's an empty line, the body starts after it
+                    let body_lines: Vec<String> = lines.skip_while(|line| line.is_empty()).map(String::from).collect();
+                    if body_lines.is_empty() {
+                        None
+                    } else {
+                        Some(body_lines.join("\n"))
+                    }
                 } else {
                     None
                 };
+                println!("Received request: {} {} with headers: {:?}", method, path, headers);
 
-                Ok(HttpRequest {
+                Ok(Some(HttpRequest {
                     method: RequestMethod::from_str(&method).unwrap_or(Get),
                     path,
                     headers,
                     body,
-                })
+                }))
             }
             Ok(_) => Err("No data received".to_string()),
-            Err(e) => Err(format!("Failed to read from stream: {}", e)),
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    return Ok(None)
+                }
+                Err(format!("Failed to read request: {}", e))
+            }
         }
     }
 
@@ -89,9 +120,8 @@ impl HttpServerClient for HttpV11ServerClient {
         let bytes = r.get_bytes();
 
         println!(
-            "Sending response: {} \r\n {}",
-            response.status,
-            response.body.unwrap_or_default()
+            "Sending response: {}",
+            response
         );
 
         self.stream.write_all(&bytes).unwrap();
@@ -148,7 +178,7 @@ pub struct HttpV11Server {
     status: Arc<Mutex<ServerStatus>>,
     clients: Arc<Mutex<Vec<Arc<Mutex<HttpV11ServerClient>>>>>,
     address: IpAddr,
-    tcp_listener: TcpListener,
+    tcp_listener: Option<TcpListener>,
     server_thread: Option<std::thread::JoinHandle<()>>,
     mappings: Arc<Mutex<Vec<Box<dyn HttpMapping + Send + Sync>>>>,
 }
@@ -164,20 +194,18 @@ impl HttpServer for HttpV11Server {
         println!("Starting HTTP/1.1 server on {}:{}", self.address, self.port);
 
         // Bind to the specified address and port
-        self.tcp_listener = TcpListener::bind((self.address, self.port)).map_err(|e| e.to_string())?;
+        let tcp_listener = TcpListener::bind((self.address, self.port))
+            .map_err(|e| format!("Failed to bind to {}: {}: {}", self.address, self.port, e))?;
+        self.tcp_listener = Some(tcp_listener.try_clone().expect("Expected valid tcp listener"));
         self.clients.lock().unwrap().clear(); // Clear any existing clients
 
         *self.status.lock().unwrap() = ServerStatus::Running;
 
         //Start listening for incoming connections on a separate thread
-        let listener = self.tcp_listener.try_clone().map_err(|e| e.to_string())?;
-        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let address = self.address.clone();
-        let port = self.port;
-        // 1) Clone the Arc for `status` and `mappings` so we can use them in the thread:
-        let status = Arc::clone(&self.status);
+        let listener = tcp_listener.try_clone().map_err(|e| e.to_string())?;
+        let status   = Arc::clone(&self.status);
         let mappings = Arc::clone(&self.mappings);
-        let clients = Arc::clone(&self.clients);
+        let clients  = Arc::clone(&self.clients);
         // 2) Now spawn your listener thread without touching `self` anymore:
         self.server_thread = Some(std::thread::spawn(move || {
             loop {
@@ -190,79 +218,11 @@ impl HttpServer for HttpV11Server {
                 match listener.accept() {
                     Ok((stream, addr)) => {
                         println!("Accepted {}", addr);
-
-                        let mappings = Arc::clone(&mappings);
-                        let client = Arc::new(Mutex::new(HttpV11ServerClient::new(address.clone(), port, stream)));
-                        {
-                            // set connected flag under the lock
-                            let mut c0 = client.lock().unwrap();
-                            c0.connected = true; // Mark the client as connected
-                        }
-
-                        // 3) Now we can spawn a thread to handle this client:
-                        {
-                            let client_clone = Arc::clone(&client);
-                            let thread = std::thread::spawn(move || {
-                                loop {
-                                    let mut c = client_clone.lock().unwrap();
-                                    if !c.is_connected().unwrap_or(false) {
-                                        break;
-                                    }
-                                    match c.receive_request() {
-                                        Ok(request) => {
-                                            println!("Got: {}", request);
-                                            let mut handled = false;
-
-                                            for mapping in mappings.lock().unwrap().iter() {
-                                                if mapping.matches_url(&request.path)
-                                                    && mapping.matches_method(&request.method) {
-                                                    handled = true;
-                                                    match mapping.handle_request(&request) {
-                                                        Ok(resp) => {
-                                                            if let Err(e) = c.send_response(resp) {
-                                                                eprintln!("send_response: {}", e);
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            eprintln!("handler error: {}", e);
-                                                            let err = HttpResponse::new(
-                                                                StatusCode::InternalServerError,
-                                                                vec![("Content-Type".into(), TextPlain.to_string())],
-                                                                Some("Internal Server Error".into()),
-                                                            );
-                                                            let _ = c.send_response(err);
-                                                        }
-                                                    }
-                                                    break;
-                                                }
-                                            }
-
-                                            if !handled {
-                                                let not_found = HttpResponse::new(
-                                                    StatusCode::NotFound,
-                                                    vec![("Content-Type".into(), TextPlain.to_string())],
-                                                    Some("Not Found".into()),
-                                                );
-                                                let _ = c.send_response(not_found);
-                                            }
-
-                                            break; // one request per connection
-                                        }
-                                        Err(e) => {
-                                            eprintln!("receive_request: {}", e);
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                let ip_address = client_clone.lock().unwrap()
-                                    .get_ip_address().unwrap();
-                                println!("Server Client {} disconnected", ip_address);
-                             });
-                            client.lock().unwrap().thread = Some(thread);
-                        }
-
-                        clients.lock().unwrap().push(client);
+                        // Create a new client
+                        let client = create_client(stream).unwrap();
+                        client.lock().unwrap().thread = handle_client(client.clone(), mappings.clone()).expect("Failed to handle client");
+                        // Add the client to the list of clients
+                        clients.lock().unwrap().push(client.clone());
                     }
 
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -316,6 +276,21 @@ impl HttpServer for HttpV11Server {
     fn is_running(&self) -> Result<bool, String> {
         Ok(self.status.lock().unwrap().clone() == ServerStatus::Running)
     }
+
+    fn join(&mut self) -> Result<(), String> {
+        if let Some(server_thread) = self.server_thread.take() {
+            server_thread
+                .join()
+                .map_err(|_| "Failed to join server thread".to_string())?;
+        }
+        Ok(())
+    }
+
+    fn add_mapping(&mut self, mapping: Box<dyn HttpMapping + Send + Sync>) -> Result<(), String> {
+        let mut mappings = self.mappings.lock().unwrap();
+        mappings.push(mapping);
+        Ok(())
+    }
 }
 
 impl HttpV11Server {
@@ -326,8 +301,187 @@ impl HttpV11Server {
             mappings: Arc::new(Mutex::new(Vec::new())),
             clients: Arc::new(Mutex::new(Vec::new())),
             address,
-            tcp_listener: TcpListener::bind((address, 0)).expect("Could not bind to address"),
+            tcp_listener: None,
             server_thread: None,
         }
     }
+}
+
+fn validate_request(request: &HttpRequest) -> Result<(), String> {
+    // 1) Request method must be valid
+    match request.method {
+        RequestMethod::Get
+        | RequestMethod::Head
+        | RequestMethod::Post
+        | RequestMethod::Put
+        | RequestMethod::Delete
+        | RequestMethod::Options
+        | RequestMethod::Trace
+        | RequestMethod::Connect => {}
+        _ => return Err(format!("Unsupported method: {}", request.method)),
+    }
+
+    // 2) Request‑target must be non‑empty; for origin‑form it should start with '/'
+    if request.path.is_empty() {
+        return Err("Request path cannot be empty".into());
+    } else if !request.path.starts_with('/') && request.method != RequestMethod::Connect {
+        // CONNECT uses authority‑form, OPTIONS can use "*"
+        return Err("Invalid request‑target format".into());
+    }
+
+    // 3) Host header is mandatory in HTTP/1.1
+    if !request
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+        return Err("Missing required `Host` header".into());
+    }
+
+    // 4) If there is a message body, require either Content-Length or Transfer-Encoding
+    if request.body.is_some() {
+        let has_len = request
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-length"));
+        let has_te = request
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"));
+        if !has_len && !has_te {
+            return Err(
+                "Requests with a body must include `Content-Length` or `Transfer-Encoding`"
+                    .into(),
+            );
+        }
+    }
+
+    // 5) Content-Type is only required when you actually expect a body with semantic content
+    if matches!(
+        request.method,
+        RequestMethod::Post | RequestMethod::Put | RequestMethod::Patch
+    ) && !request
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+        return Err("POST/PUT requests should include a `Content-Type` header".into());
+    }
+
+    // 6) Validate header syntax: token characters for names, no raw control chars in values
+    for (name, value) in &request.headers {
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-!#$%&'*+.^_`|~".contains(c)) {
+            return Err(format!("Invalid header name token: `{}`", name));
+        }
+        if value.bytes().any(|b| b == b'\r' || b == b'\n') {
+            return Err(format!("Illegal control char in header `{}` value", name));
+        }
+    }
+
+    Ok(())
+}
+
+fn create_client(tcp_stream: TcpStream) -> Result<Arc<Mutex<HttpV11ServerClient>>, String> {
+    let client = Arc::new(Mutex::new(HttpV11ServerClient::new(tcp_stream.local_addr().unwrap().ip(), tcp_stream.local_addr().unwrap().port(), tcp_stream)));
+    client.lock().unwrap().connected = true;
+    Ok(client)
+}
+
+fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Vec<Box<dyn HttpMapping + Send + Sync>>>>) -> Result<Option<std::thread::JoinHandle<()>>, Error> {
+    if(client.lock().unwrap().is_connected().unwrap_or(false) == false) {
+        return Ok(None); // Client is not connected, return None
+    }
+    let handle = std::thread::spawn(move || {
+        let mut c = client.lock().unwrap();
+        loop {
+            if !c.is_connected().unwrap_or(false) {
+                break;
+            }
+            match c.receive_request() {
+                Ok(request) => {
+                    if request.is_none() {
+                        // No request received, continue to next iteration
+                        continue;
+                    }
+
+                    println!("Received request: {}", request.clone().expect("Request should not be None"));
+                    // Validate the request
+                    if let Err(e) = validate_request(&request.clone().expect("Request should not be None")) {
+                        eprintln!("Invalid request: {}", e);
+                        let err = HttpResponse::new(
+                            StatusCode::BadRequest,
+                            vec![("Content-Type".into(), TextPlain.to_string())],
+                            Some(e),
+                        );
+                        let _ = c.send_response(err);
+                        continue; // Skip to the next iteration
+                    }
+
+                    let request = request.expect("Request should not be None");
+                    let keep_alive = request.headers.iter()
+                        .any(|(k, v)| k.eq_ignore_ascii_case("Connection") && v.eq_ignore_ascii_case("keep-alive"));
+                    let mut handled = false;
+
+                    for mapping in mappings.lock().unwrap().iter() {
+                        if mapping.matches_url(&request.path)
+                            && mapping.matches_method(&request.method) {
+                            handled = true;
+                            match mapping.handle_request(&request) {
+                                Ok(resp) => {
+                                    if let Err(e) = c.send_response(resp) {
+                                        eprintln!("Sending Response: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("handler error: {}", e);
+                                    let err = HttpResponse::new(
+                                        StatusCode::InternalServerError,
+                                        vec![("Content-Type".into(), TextPlain.to_string())],
+                                        Some("Internal Server Error".into()),
+                                    );
+                                    let _ = c.send_response(err);
+                                }
+                            }
+                        }
+                    }
+
+                    if !handled {
+                        let not_found = HttpResponse::new(
+                            StatusCode::NotFound,
+                            vec![("Content-Type".into(), TextPlain.to_string())],
+                            Some("Not Found".into()),
+                        );
+                        let _ = c.send_response(not_found);
+                    }
+
+                    println!("keep_alive: {}", keep_alive);
+
+                    if !keep_alive {
+                        c.disconnect().unwrap_or_else(|e| eprintln!("disconnect error: {}", e));
+                        break; // Exit the loop if not keep-alive
+                    }
+                }
+                Err(e) => {
+                    eprintln!("receive_request error: {}", e);
+                    let err = HttpResponse::new(
+                        StatusCode::InternalServerError,
+                        vec![("Content-Type".into(), TextPlain.to_string())],
+                        Some("Internal Server Error".into()),
+                    );
+                    let _ = c.send_response(err);
+                    break; // Exit the loop on error
+                }
+            }
+        }
+
+        println!("Server Client {} disconnected", c.ip_address);
+    });
+
+    // Return the thread handle
+    if handle.is_finished() {
+        return Err(Error::new(std::io::ErrorKind::Other, "Client thread finished immediately"));
+    }
+
+    // Thread handle is returned, or `None` if the client is not connected
+    Ok(Some(handle))
 }

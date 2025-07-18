@@ -116,6 +116,95 @@ impl HttpMapping for FileMapping {
     }
 }
 
+pub struct DirectoryMapping {
+    pub url: String,
+    pub method: RequestMethod,
+    pub content_type: ContentType,
+    pub directory_path: String,
+}
+
+impl Clone for DirectoryMapping {
+    fn clone(&self) -> Self {
+        DirectoryMapping {
+            url: self.url.clone(),
+            method: self.method.clone(),
+            content_type: self.content_type.clone(),
+            directory_path: self.directory_path.clone(),
+        }
+    }
+}
+
+impl PartialEq for DirectoryMapping {
+    fn eq(&self, other: &Self) -> bool {
+        self.url == other.url && self.method == other.method && self.content_type == other.content_type && self.directory_path == other.directory_path
+    }
+}
+
+impl DirectoryMapping {
+    pub fn new(url: String, method: RequestMethod, content_type: ContentType, directory_path: String) -> Self {
+        DirectoryMapping {
+            url,
+            method,
+            content_type,
+            directory_path,
+        }
+    }
+}
+
+impl HttpMapping for DirectoryMapping {
+    fn matches_url(&self, url: &str) -> bool {
+        // Check if the URL matches the pattern
+        if self.url == "*" {
+            return true; // Matches all URLs
+        }
+
+        let path = url.split(&['?', '#'][..]).next().unwrap_or(url);
+        if self.url == path {
+            return true; // Exact match
+        }
+        let pattern_parts: Vec<&str> =
+            self.url.trim_matches('/').split('/').collect();
+        let url_parts: Vec<&str> =
+            path.trim_matches('/').split('/').collect();
+        if pattern_parts.len() != url_parts.len() {
+            return false;
+        }
+        for (pattern, part) in pattern_parts.iter().zip(url_parts.iter()) {
+            if pattern != &"*" && pattern != part {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn matches_method(&self, method: &RequestMethod) -> bool {
+        self.method == *method
+    }
+
+    fn get_content_type(&self) -> ContentType {
+        self.content_type.clone()
+    }
+
+    fn handle_request(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        let dir_content = std::fs::read_dir(&self.directory_path)
+            .map_err(|e| format!("Failed to read directory {}: {}", self.directory_path, e))?;
+
+        let mut body = String::new();
+        for entry in dir_content {
+            let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+            body.push_str(&format!("{}\n", entry.file_name().to_string_lossy()));
+        }
+
+        Ok(HttpResponse {
+            status: StatusCode::Ok.status(),
+            headers: vec![("Content-Type".to_string(), self.content_type.to_string()),
+                          ("Content-Length".to_string(), body.len().to_string())],
+            body: Some(body),
+        })
+    }
+}
+
 pub trait HttpServer {
     fn start(&mut self) -> Result<(), String>;
     fn stop(&mut self) -> Result<(), String>;
@@ -126,10 +215,12 @@ pub trait HttpServer {
     fn get_port(&self) -> Result<u16, String>;
     fn status(&self) -> Result<ServerStatus, String>;
     fn is_running(&self) -> Result<bool, String>;
+    fn join(&mut self) -> Result<(), String>;
+    fn add_mapping(&mut self, mapping: Box<dyn HttpMapping + Send + Sync>) -> Result<(), String>;
 }
 
 pub trait HttpServerClient {
-    fn receive_request(&mut self) -> Result<HttpRequest, String>;
+    fn receive_request(&mut self) -> Result<Option<HttpRequest>, String>;
     fn send_response(&mut self, response: HttpResponse) -> Result<(), String>;
     fn send_error_response(&mut self, status: HttpStatus, message: &str) -> Result<(), String> {
         let response = HttpResponse {

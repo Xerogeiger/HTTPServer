@@ -46,28 +46,23 @@ impl HttpClient for HttpV10Client {
     }
 
     fn send_request(&self, req: HttpRequest) -> Result<HttpResponse, String> {
+        let mut req = req.clone();
+        req.headers.push(("Host".to_string(), format!("{}:{}", self.host, self.port)));
+        req.headers.push(("Connection".to_string(), "close".to_string()));
+        req.headers.push(("User-Agent".to_string(), "Rust HTTP Client/1.0".to_string()));
+        req.headers.push(("Accept".to_string(), "*/*".to_string()));
+        req.headers.push(("Accept-Language".to_string(), "en-US,en;q=0.5".to_string()));
+        req.headers.push(("Accept-Encoding".to_string(), "gzip, deflate".to_string()));
+        req.headers.push(("Content-Length".to_string(),
+            req.body.as_ref().map_or("0".to_string(), |b| b.len().to_string())));
+
         let addr = format!("{}:{}", self.host, self.port);
         let mut stream = TcpStream::connect(&addr)
             .map_err(|e| format!("Connection error: {}", e))?;
 
-        // Build the request line + headers
-        let mut request_text = format!(
-            "{} {} HTTP/1.0\r\nHost: {}\r\n",
-            req.method, req.path, self.host
-        );
-        for (k, v) in self.headers.iter().chain(req.headers.iter()) {
-            request_text.push_str(&format!("{}: {}\r\n", k, v));
-        }
-        request_text.push_str("\r\n"); // end of headers
-
-        // Add body if present
-        if let Some(body) = req.body {
-            request_text.push_str(&body);
-        }
-
         // Send it
         stream
-            .write_all(request_text.as_bytes())
+            .write_all(&*req.get_bytes())
             .map_err(|e| format!("Write error: {}", e))?;
 
         // Read the full response
@@ -84,10 +79,10 @@ impl HttpClient for HttpV10Client {
             return Err("Invalid status line".to_string());
         }
 
-        let status_code: u16 = status_parts[0]
+        let status_code: u16 = status_parts[1]
             .parse()
             .map_err(|_| "Invalid status code".to_string())?;
-        let status_text = status_parts.get(1).map_or("OK", |s| *s).to_string();
+        let status_text = status_parts.get(2).map_or("OK", |s| *s).to_string();
 
         // Read headers
         let mut headers = Vec::new();

@@ -234,6 +234,11 @@ pub enum RequestMethod {
     Post,
     Put,
     Delete,
+    Head,
+    Options,
+    Trace,
+    Connect,
+    Patch,
 }
 
 impl RequestMethod {
@@ -243,6 +248,11 @@ impl RequestMethod {
             "POST" => Some(RequestMethod::Post),
             "PUT" => Some(RequestMethod::Put),
             "DELETE" => Some(RequestMethod::Delete),
+            "HEAD" => Some(RequestMethod::Head),
+            "OPTIONS" => Some(RequestMethod::Options),
+            "TRACE" => Some(RequestMethod::Trace),
+            "CONNECT" => Some(RequestMethod::Connect),
+            "PATCH" => Some(RequestMethod::Patch),
             _ => None,
         }
     }
@@ -255,6 +265,11 @@ impl Clone for RequestMethod {
             RequestMethod::Post => RequestMethod::Post,
             RequestMethod::Put => RequestMethod::Put,
             RequestMethod::Delete => RequestMethod::Delete,
+            RequestMethod::Head => RequestMethod::Head,
+            RequestMethod::Options => RequestMethod::Options,
+            RequestMethod::Trace => RequestMethod::Trace,
+            RequestMethod::Connect => RequestMethod::Connect,
+            RequestMethod::Patch => RequestMethod::Patch,
         }
     }
 }
@@ -266,6 +281,11 @@ impl PartialEq for RequestMethod {
             (RequestMethod::Post, RequestMethod::Post) => true,
             (RequestMethod::Put, RequestMethod::Put) => true,
             (RequestMethod::Delete, RequestMethod::Delete) => true,
+            (RequestMethod::Head, RequestMethod::Head) => true,
+            (RequestMethod::Options, RequestMethod::Options) => true,
+            (RequestMethod::Trace, RequestMethod::Trace) => true,
+            (RequestMethod::Connect, RequestMethod::Connect) => true,
+            (RequestMethod::Patch, RequestMethod::Patch) => true,
             _ => false,
         }
     }
@@ -278,6 +298,11 @@ impl Display for RequestMethod {
             RequestMethod::Post => "POST",
             RequestMethod::Put => "PUT",
             RequestMethod::Delete => "DELETE",
+            RequestMethod::Head => "HEAD",
+            RequestMethod::Options => "OPTIONS",
+            RequestMethod::Trace => "TRACE",
+            RequestMethod::Connect => "CONNECT",
+            RequestMethod::Patch => "PATCH",
         };
         write!(f, "{}", str)
     }
@@ -344,6 +369,37 @@ pub struct HttpRequest {
     pub body: Option<String>,
 }
 
+impl HttpRequest {
+    pub fn new(method: RequestMethod, path: String, headers: Vec<(String, String)>, body: Option<String>) -> Self {
+        HttpRequest {
+            method,
+            path,
+            headers,
+            body,
+        }
+    }
+}
+
+impl HttpRequest {
+    pub fn get_bytes(&self) -> Vec<u8> {
+        let mut request_text = format!("{} {} HTTP/1.1\r\n", self.method, self.path);
+        for (key, value) in &self.headers {
+            request_text.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        request_text.push_str("\r\n"); // end of headers
+        if let Some(body) = &self.body {
+            request_text.push_str(body);
+        }
+        request_text.into_bytes()
+    }
+}
+
+impl PartialEq for HttpRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.method == other.method && self.path == other.path && self.headers == other.headers && self.body == other.body
+    }
+}
+
 impl Clone for HttpRequest {
     fn clone(&self) -> Self {
         HttpRequest {
@@ -358,12 +414,18 @@ impl Clone for HttpRequest {
 impl Display for HttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut request_text = format!("{} {} HTTP/1.1\r\n", self.method, self.path);
+        let mut first = true;
         for (key, value) in &self.headers {
-            request_text.push_str(&format!("{}: {}\r\n", key, value));
+            if !first {
+                request_text.push_str("\r\n");
+            } else {
+                first = false;
+            }
+
+            request_text.push_str(&format!("{}: {}", key, value));
         }
-        request_text.push_str("\r\n"); // end of headers
-        if let Some(body) = &self.body {
-            request_text.push_str(body);
+        if self.headers.len() > 0 {
+            request_text.push_str("\r\n");
         }
         write!(f, "{}", request_text)
     }
@@ -397,8 +459,14 @@ impl HttpResponse {
 
 impl HttpResponse {
     pub fn get_bytes(&self) -> Vec<u8> {
-        let mut response_text = format!("{} {}\r\n", self.status.code, self.status.text);
-        for (key, value) in &self.headers {
+        let mut headers = self.headers.clone();
+        if self.body.is_none() {
+            headers.push(("Content-Length".to_string(), "0".to_string()));
+        } else if let Some(body) = &self.body {
+            headers.push(("Content-Length".to_string(), body.len().to_string()));
+        }
+        let mut response_text = format!("HTTP/1.1 {} {}\r\n", self.status.code, self.status.text);
+        for (key, value) in &headers {
             response_text.push_str(&format!("{}: {}\r\n", key, value));
         }
         response_text.push_str("\r\n"); // end of headers
@@ -412,13 +480,17 @@ impl HttpResponse {
 impl Display for HttpResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut response_text = format!("{} {}\r\n", self.status.code, self.status.text);
+        let mut first = true;
         for (key, value) in &self.headers {
-            response_text.push_str(&format!("{}: {}\r\n", key, value));
+            if !first {
+                response_text.push_str("\r\n");
+            } else {
+                first = false;
+            }
+
+            response_text.push_str(&format!("{}: {}", key, value));
         }
         response_text.push_str("\r\n"); // end of headers
-        if let Some(body) = &self.body {
-            response_text.push_str(body);
-        }
-        write!(f, "{}", response_text)
+        write!(f, "{}", response_text.to_string())
     }
 }

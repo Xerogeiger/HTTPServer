@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Complex Sample Webpage</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:400,700&display=swap">
+    <style>
+        :root {
+            --primary-color: #4CAF50;
+            --secondary-color: #fff;
+            --bg-color: #f4f4f4;
+            --text-color: #333;
+            --dark-bg: #222;
+            --dark-text: #f4f4f4;
+        }
+        * { margin:0; padding:0; box-sizing: border-box; }
+        body { font-family:'Roboto',sans-serif; background-color: var(--bg-color); color: var(--text-color); line-height:1.6; }
+        header { background: var(--primary-color); color: var(--secondary-color); padding: 1rem 2rem; position: fixed; width:100%; top:0; z-index:1000; display: flex; justify-content: space-between; align-items:center; }
+        .logo { font-size:1.5rem; font-weight:700; }
+        nav ul { list-style:none; display:flex; }
+        nav ul li { margin-left:1.5rem; }
+        nav ul li a { color:inherit; text-decoration:none; font-weight:500; }
+        .hamburger { display:none; flex-direction:column; cursor:pointer; }
+        .hamburger div { width:25px; height:3px; background: var(--secondary-color); margin:4px; }
+        @media(max-width:768px) {
+            nav ul { display:none; position:absolute; top:60px; right:0; background: var(--primary-color); flex-direction:column; width:200px; }
+            nav ul.active { display:flex; }
+            .hamburger { display:flex; }
+        }
+        .hero { height:100vh; background:url('https://source.unsplash.com/1600x900/?nature') no-repeat center/cover; display:flex; justify-content:center; align-items:center; text-align:center; color:#fff; }
+        .hero h1 { font-size:3rem; margin-bottom:1rem; text-shadow:2px 2px 4px rgba(0,0,0,0.7); }
+        .hero button { padding:0.75rem 1.5rem; border:none; background: var(--primary-color); color:#fff; font-size:1rem; cursor:pointer; border-radius:4px; transition: background 0.3s; }
+        .hero button:hover { background:#45a049; }
+        section { padding:4rem 2rem; }
+        .features { display:grid; grid-template-columns: repeat(auto-fit,minmax(250px,1fr)); gap:2rem; }
+        .card { background:#fff; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.1); padding:2rem; text-align:center; }
+        .gallery { display:grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap:1rem; }
+        .gallery img { width:100%; border-radius:4px; cursor:pointer; }
+        /* Modal */
+        .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.8); justify-content:center; align-items:center; }
+        .modal img { max-width:90%; max-height:80%; border-radius:8px; }
+        .close-btn { position:absolute; top:20px; right:30px; font-size:2rem; color:#fff; cursor:pointer; }
+        /* Contact form */
+        .contact form { max-width:600px; margin:0 auto; display:flex; flex-direction:column; }
+        .contact input, .contact textarea { padding:0.75rem; margin-bottom:1rem; border:1px solid #ccc; border-radius:4px; }
+        .contact button { width:150px; align-self:flex-end; padding:0.75rem; border:none; background: var(--primary-color); color:#fff; cursor:pointer; border-radius:4px; }
+        .dark-mode { background-color: var(--dark-bg); color: var(--dark-text);}
+        .dark-mode header { background: #333;}
+        .dark-mode .card { background:#333; box-shadow:none; color:#fff;}
+    </style>
+</head>
+<body>
+<header>
+    <div class="logo">MySite</div>
+    <nav>
+        <ul>
+            <li><a href="#home">Home</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#gallery">Gallery</a></li>
+            <li><a href="#contact">Contact</a></li>
+        </ul>
+    </nav>
+    <div class="hamburger"><div></div><div></div><div></div></div>
+    <button id="darkToggle">🌙</button>
+</header>
+<section class="hero" id="home">
+    <div>
+        <h1>Welcome to MySite</h1>
+        <button onclick="document.getElementById('features').scrollIntoView({behavior:'smooth'})">Learn More</button>
+    </div>
+</section>
+<section id="features">
+    <h2 style="text-align:center; margin-bottom:2rem;">Features</h2>
+    <div class="features">
+        <div class="card"><h3>Feature One</h3><p>Lorem ipsum dolor sit amet.</p></div>
+        <div class="card"><h3>Feature Two</h3><p>Consectetur adipiscing elit.</p></div>
+        <div class="card"><h3>Feature Three</h3><p>Sed do eiusmod tempor incididunt.</p></div>
+    </div>
+</section>
+<section id="gallery">
+    <h2 style="text-align:center; margin-bottom:2rem;">Gallery</h2>
+    <div class="gallery">
+        <img src="./images/image1.png" alt="Gallery image">
+        <img src="./images/image2.png" alt="Gallery image">
+        <img src="./images/image3.png" alt="Gallery image">
+    </div>
+    <div class="modal" id="modal"><span class="close-btn">&times;</span><img src="" alt="Enlarged image"></div>
+</section>
+<section class="contact" id="contact">
+    <h2 style="text-align:center; margin-bottom:2rem;">Contact Us</h2>
+    <form onsubmit="return validateForm()">
+        <input type="text" id="name" placeholder="Your Name" required>
+        <input type="email" id="email" placeholder="Email Address" required>
+        <textarea id="message" rows="5" placeholder="Your Message" required></textarea>
+        <button type="submit">Send Message</button>
+    </form>
+</section>
+<footer style="text-align:center; padding:2rem; background:#222; color:#fff;">&copy; 2025 MySite Co.</footer>
+<script>
+    document.querySelector('.hamburger').addEventListener('click',()=>{
+        document.querySelector('nav ul').classList.toggle('active');
+    });
+    document.querySelectorAll('.gallery img').forEach(img=>{
+        img.addEventListener('click',()=>{
+            document.getElementById('modal').style.display='flex';
+            document.querySelector('#modal img').src=img.src;
+        });
+    });
+    document.querySelector('.close-btn').addEventListener('click',()=>{
+        document.getElementById('modal').style.display='none';
+    });
+    function validateForm(){
+        const name=document.getElementById('name').value;
+        const email=document.getElementById('email').value;
+        const msg=document.getElementById('message').value;
+        if(name.length<3||!email.includes('@')||msg.length<10){
+            alert('Please fill out the form correctly.');
+            return false;
+        }
+        alert('Thank you, '+name+'!');
+        return false;
+    }
+    document.getElementById('darkToggle').addEventListener('click',()=>{
+        document.body.classList.toggle('dark-mode');
+    });
+</script>
+</body>
+</html>
