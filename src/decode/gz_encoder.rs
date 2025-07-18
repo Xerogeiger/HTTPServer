@@ -149,7 +149,6 @@ impl DeflateEncoder {
         // header bits: BFINAL=1, BTYPE=10
         bw.write_bit(1);
         bw.write_bits(2, 2);
-        bw.align_byte();
 
         // 1) count frequencies from tokens
         let mut lit_freq = [0u32; 286];
@@ -174,53 +173,54 @@ impl DeflateEncoder {
         let dist_lens = huffman_code_lengths(&dist_freq, 15)?;
 
         // 3) write HLIT, HDIST, HCLEN
-        let last_lit = lit_lens.iter().rposition(|&l| l != 0).unwrap();
-        let last_dist = dist_lens.iter().rposition(|&l| l != 0).unwrap();
-        let hlit = last_lit as usize - 256;
-        let hdist = last_dist as usize;
-        let hclen = 19 - 4;
+        let last_lit = find_last_nonzero(&lit_lens);
+        let last_dist = find_last_nonzero(&dist_lens);
+        let hlit = (last_lit + 1) - 257;
+        let hdist = (last_dist + 1) - 1;
+        let clens = build_clens(&lit_lens, &dist_lens)?;
+        let last_clen = find_last_nonzero(&clens);
+        let hclen = (last_clen + 1) - 4;
         bw.write_bits(hlit as u32, 5);
         bw.write_bits(hdist as u32, 5);
         bw.write_bits(hclen as u32, 4);
 
         // 4) emit code-length tree
-        let clens = build_clens(&lit_lens, &dist_lens)?;
         for &i in &CODE_LENGTH_ORDER[..(hclen+4) as usize] {
             bw.write_bits(clens[i] as u32, 3);
         }
-        // RLE of lengths
-        // (reuse your rle_encode function)
-        rle_encode(&mut bw, &lit_lens);
-        rle_encode(&mut bw, &dist_lens);
-        out.extend_from_slice(&bw.finish());
+        // RLE of lengths using code-length codes
+        let cl_codes = gen_codes(&clens);
+        let mut combined = Vec::with_capacity(last_lit+1 + last_dist+1);
+        combined.extend_from_slice(&lit_lens[..last_lit+1]);
+        combined.extend_from_slice(&dist_lens[..last_dist+1]);
+        rle_encode(&mut bw, &combined, &cl_codes);
 
-        // 5) encode tokens
+        // 5) encode tokens using same bitwriter
         let lit_codes = gen_codes(&lit_lens);
         let dist_codes = gen_codes(&dist_lens);
-        let mut bw2 = BitWriter::new();
         for token in tokens {
             match *token {
                 Token::Literal(b) => {
                     let (code, len) = lit_codes[b as usize].unwrap();
-                    bw2.write_bits(code, len);
+                    bw.write_bits(code, len);
                 }
                 Token::Match { length, distance } => {
                     let (sym, eb, base) = length_code_and_bits(length);
                     let (code, len) = lit_codes[sym].unwrap();
-                    bw2.write_bits(code, len);
-                    bw2.write_bits((length - base) as u32, eb);
+                    bw.write_bits(code, len);
+                    bw.write_bits((length - base) as u32, eb);
                     let (dsym, deb, dbase) = distance_code_and_bits(distance);
                     let (dcode, dlen) = dist_codes[dsym].unwrap();
-                    bw2.write_bits(dcode, dlen);
-                    bw2.write_bits((distance - dbase) as u32, deb);
+                    bw.write_bits(dcode, dlen);
+                    bw.write_bits((distance - dbase) as u32, deb);
                 }
             }
         }
         // EOB
         let (code, len) = lit_codes[256].unwrap();
-        bw2.write_bits(code, len);
-        bw2.align_byte();
-        out.extend_from_slice(&bw2.finish());
+        bw.write_bits(code, len);
+        bw.align_byte();
+        out.extend_from_slice(&bw.finish());
         Ok(())
     }
 }
@@ -404,7 +404,7 @@ fn build_clens(lit_lens: &[u8], dist_lens: &[u8]) -> io::Result<Vec<u8>> {
 
 /// Run-length encode a sequence of code lengths and write to BitWriter
 /// lens: array of code lengths (literal/length or distance)
-fn rle_encode(bw: &mut BitWriter, lens: &[u8]) {
+fn rle_encode(bw: &mut BitWriter, lens: &[u8], codes: &[Option<(u32, u8)>]) {
     let mut i = 0;
     while i < lens.len() {
         let val = lens[i];
@@ -417,33 +417,39 @@ fn rle_encode(bw: &mut BitWriter, lens: &[u8]) {
             let mut r = run;
             while r >= 11 {
                 let chunk = r.min(138);
-                bw.write_bits(18, 3);
+                let (code, len) = codes[18].unwrap();
+                bw.write_bits(code, len);
                 bw.write_bits((chunk - 11) as u32, 7);
                 r -= chunk;
             }
             if r >= 3 {
                 let chunk = r.min(10);
-                bw.write_bits(17, 3);
+                let (code, len) = codes[17].unwrap();
+                bw.write_bits(code, len);
                 bw.write_bits((chunk - 3) as u32, 3);
                 r -= chunk;
             }
             for _ in 0..r {
-                bw.write_bits(0, 3);
+                let (code, len) = codes[0].unwrap();
+                bw.write_bits(code, len);
             }
         } else {
             // non-zeros: code val,16
             let mut r = run;
             // first occurrence
-            bw.write_bits(val as u32, 3);
+            let (code, clen) = codes[val as usize].unwrap();
+            bw.write_bits(code, clen);
             r -= 1;
             while r >= 3 {
                 let chunk = r.min(6);
-                bw.write_bits(16, 3);
+                let (code16, len16) = codes[16].unwrap();
+                bw.write_bits(code16, len16);
                 bw.write_bits((chunk - 3) as u32, 2);
                 r -= chunk;
             }
             for _ in 0..r {
-                bw.write_bits(val as u32, 3);
+                let (code, clen) = codes[val as usize].unwrap();
+                bw.write_bits(code, clen);
             }
         }
         i += run;

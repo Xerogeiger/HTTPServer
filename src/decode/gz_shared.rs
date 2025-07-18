@@ -175,9 +175,14 @@ pub fn generate_crc32_table() -> [u32; 256] {
     table
 }
 
-/// Build a canonical code→symbol lookup table.
-/// Returns (map, max_code_length).
-pub fn build_codes(lens: &[u8]) -> (std::collections::HashMap<u32, usize>, u8) {
+/// Build a canonical Huffman `code → symbol` lookup table.
+///
+/// The returned map is keyed by `(code, bit_length)` where `code` is stored in
+/// the DEFLATE bit order (least significant bit first).  The second value in
+/// the tuple is the maximum code length present in `lens`.
+pub fn build_codes(
+    lens: &[u8],
+) -> (std::collections::HashMap<(u32, u8), usize>, u8) {
     // 1) Count how many codes of each length
     let mut counts = std::collections::BTreeMap::new();
     for &l in lens { if l > 0 { *counts.entry(l).or_insert(0usize) += 1 } }
@@ -195,7 +200,14 @@ pub fn build_codes(lens: &[u8]) -> (std::collections::HashMap<u32, usize>, u8) {
     for (symbol, &len) in lens.iter().enumerate() {
         if len > 0 {
             let entry = next_code.get_mut(&len).unwrap();
-            table.insert(*entry, symbol);
+            // Codes are transmitted least significant bit first.  Reverse the
+            // canonical code bits so that the decoder can compare the bit
+            // stream incrementally.
+            let mut rev = 0u32;
+            for i in 0..len {
+                rev |= ((*entry >> i) & 1) << (len - 1 - i);
+            }
+            table.insert((rev, len), symbol);
             *entry += 1;
             max_len = max_len.max(len);
         }
@@ -235,8 +247,13 @@ pub fn gen_codes(lens: &[u8]) -> Vec<Option<(u32, u8)>> {
         if length == 0 {
             codes.push(None);
         } else {
-            let c = next_code[length as usize];
-            codes.push(Some((c, length)));
+            let mut c = next_code[length as usize];
+            // Reverse bits for DEFLATE bit order
+            let mut rev = 0u32;
+            for i in 0..length {
+                rev |= ((c >> i) & 1) << (length - 1 - i);
+            }
+            codes.push(Some((rev, length)));
             next_code[length as usize] += 1;
         }
     }
