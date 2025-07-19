@@ -627,4 +627,34 @@ mod tests {
         let b = compute_crc32(b"bar");
         assert_ne!(a, b);
     }
+
+    // —— Compatibility with flate2 —— //
+
+    #[test]
+    fn test_encode_compatible_with_flate2_decoder() {
+        use flate2::read::GzDecoder as FlateDecoder;
+        use std::io::Read;
+
+        let data = b"gzip interoperability test";
+        let encoded = GzEncoder::new().encode(data).expect("encode failed");
+
+        let mut decoder = FlateDecoder::new(&encoded[..]);
+        let mut out = Vec::new();
+        decoder.read_to_end(&mut out).expect("flate2 decode failed");
+        assert_eq!(&out, data);
+    }
+
+    #[test]
+    fn test_decode_flate2_encoded_data() {
+        use flate2::{Compression, write::GzEncoder as FlateEncoder};
+        use std::io::Write;
+
+        let data = b"round trip via flate2";
+        let mut enc = FlateEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        let encoded = enc.finish().unwrap();
+
+        let decoded = GzDecoder::load(&encoded).unwrap().decompress().unwrap();
+        assert_eq!(&decoded, data);
+    }
 }
