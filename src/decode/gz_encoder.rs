@@ -233,39 +233,51 @@ impl GzEncoder {
         // 1) GZip header
         out.extend_from_slice(&self.header.to_bytes());
 
-        print!("GZip header: ");
-        for byte in &out {
-            print!("{:02x} ", byte);
+        #[cfg(debug_assertions)]
+        {
+            print!("GZip header: ");
+            for byte in &out {
+                print!("{:02x} ", byte);
+            }
+            println!();
         }
-        println!();
 
         // 2) Body
         let mut deflate = DeflateEncoder::new(DeflateBlockType::FixedHuffman);
         let deflated_data = deflate.encode(data)?;
         out.extend_from_slice(&deflated_data);
 
-        print!("Deflated data: ");
-        for byte in &deflated_data {
-            print!("{:02x} ", byte);
+        #[cfg(debug_assertions)]
+        {
+            print!("Deflated data: ");
+            for byte in &deflated_data {
+                print!("{:02x} ", byte);
+            }
+            println!();
         }
-        println!();
 
         // 3) Trailer
         let crc = compute_crc32(data);
         out.extend_from_slice(&crc.to_le_bytes());
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
 
-        print!("GZip trailer: ");
-        for byte in &out[out.len()-8..] {
-            print!("{:02x} ", byte);
+        #[cfg(debug_assertions)]
+        {
+            print!("GZip trailer: ");
+            for byte in &out[out.len()-8..] {
+                print!("{:02x} ", byte);
+            }
+            println!();
         }
-        println!();
 
-        print!("Full GZip packet: ");
-        for b in &out {
-            print!("{:02x} ", b);
+        #[cfg(debug_assertions)]
+        {
+            print!("Full GZip packet: ");
+            for b in &out {
+                print!("{:02x} ", b);
+            }
+            println!();
         }
-        println!();
 
         Ok(out)
     }
