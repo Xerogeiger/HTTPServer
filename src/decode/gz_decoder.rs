@@ -488,4 +488,36 @@ mod tests {
         let out = decoder.decompress().unwrap();
         assert_eq!(out, b"hi");
     }
+
+    // —— Interoperability with flate2 —— //
+
+    #[test]
+    fn test_decode_flate2_gzip() {
+        use flate2::{Compression, write::GzEncoder as FlateEncoder};
+        use std::io::Write;
+
+        let data = b"decoder compatibility";
+        let mut enc = FlateEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        let encoded = enc.finish().unwrap();
+
+        let out = GzDecoder::load(&encoded).unwrap().decompress().unwrap();
+        assert_eq!(&out, data);
+    }
+
+    #[test]
+    fn test_flate2_can_decode_encoder_output() {
+        use flate2::read::GzDecoder as FlateDecoder;
+        use std::io::Read;
+
+        let data = b"encoder compatibility";
+        let encoded = super::super::gz_encoder::GzEncoder::new()
+            .encode(data)
+            .unwrap();
+
+        let mut dec = FlateDecoder::new(&encoded[..]);
+        let mut out = Vec::new();
+        dec.read_to_end(&mut out).expect("flate2 decode");
+        assert_eq!(&out, data);
+    }
 }
