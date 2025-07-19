@@ -93,13 +93,13 @@ impl HttpMapping for FileMapping {
         true
     }
 
+    fn matches_method(&self, method: &RequestMethod) -> bool {
+        self.method == *method
+    }
+
     fn get_content_type(&self) -> ContentType {
         // Determine content type based on file extension
         ContentType::from_extension(self.file_path.split('.').last().unwrap_or("txt")).unwrap_or(ContentType::TextPlain)
-    }
-
-    fn matches_method(&self, method: &RequestMethod) -> bool {
-        self.method == *method
     }
 
     fn handle_request(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
@@ -114,6 +114,27 @@ impl HttpMapping for FileMapping {
     }
 }
 
+pub fn dir_to_mappings(dir: &str) -> Result<Vec<Box<dyn HttpMapping + Send + Sync>>, String> {
+    let mut mappings: Vec<Box<dyn HttpMapping + Send + Sync>> = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory {}: {}", dir, e))? {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "html" || ext == "txt" {
+                    let url = format!("/{}", path.file_name().unwrap().to_string_lossy());
+                    mappings.push(Box::new(FileMapping::new(url, RequestMethod::Get, path.to_string_lossy().to_string())));
+                }
+            }
+        } else if path.is_dir() {
+            // Recursively add mappings from subdirectories
+            let sub_mappings = dir_to_mappings(path.to_str().unwrap())?;
+            mappings.extend(sub_mappings);
+        }
+    }
+    Ok(mappings)
+}
+
 pub trait HttpServer {
     fn start(&mut self) -> Result<(), String>;
     fn stop(&mut self) -> Result<(), String>;
@@ -126,6 +147,12 @@ pub trait HttpServer {
     fn is_running(&self) -> Result<bool, String>;
     fn join(&mut self) -> Result<(), String>;
     fn add_mapping(&mut self, mapping: Box<dyn HttpMapping + Send + Sync>) -> Result<(), String>;
+    fn add_mappings(&mut self, mappings: Vec<Box<dyn HttpMapping + Send + Sync>>) -> Result<(), String> {
+        for mapping in mappings {
+            self.add_mapping(mapping)?;
+        }
+        Ok(())
+    }
 }
 
 pub trait HttpServerClient {
