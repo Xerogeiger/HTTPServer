@@ -12,7 +12,6 @@ fn main() {
     server.add_mapping(Box::new(FileMapping::new(
         "/".to_string(),
         http::shared::RequestMethod::Get,
-        http::shared::ContentType::TextHtml,
         "index.html".to_string()
     ))).expect("Failed to add mapping");
     server.start().expect("Failed to start server");

@@ -37,7 +37,6 @@ pub trait HttpMapping {
 pub struct FileMapping {
     pub url: String,
     pub method: RequestMethod,
-    pub content_type: ContentType,
     pub file_path: String,
 }
 
@@ -46,7 +45,6 @@ impl Clone for FileMapping {
         FileMapping {
             url: self.url.clone(),
             method: self.method.clone(),
-            content_type: self.content_type.clone(),
             file_path: self.file_path.clone(),
         }
     }
@@ -54,16 +52,15 @@ impl Clone for FileMapping {
 
 impl PartialEq for FileMapping {
     fn eq(&self, other: &Self) -> bool {
-        self.url == other.url && self.method == other.method && self.content_type == other.content_type && self.file_path == other.file_path
+        self.url == other.url && self.method == other.method && self.file_path == other.file_path
     }
 }
 
 impl FileMapping {
-    pub fn new(url: String, method: RequestMethod, content_type: ContentType, file_path: String) -> Self {
+    pub fn new(url: String, method: RequestMethod, file_path: String) -> Self {
         FileMapping {
             url,
             method,
-            content_type,
             file_path,
         }
     }
@@ -96,12 +93,13 @@ impl HttpMapping for FileMapping {
         true
     }
 
-    fn matches_method(&self, method: &RequestMethod) -> bool {
-        self.method == *method
+    fn get_content_type(&self) -> ContentType {
+        // Determine content type based on file extension
+        ContentType::from_extension(self.file_path.split('.').last().unwrap_or("txt")).unwrap_or(ContentType::TextPlain)
     }
 
-    fn get_content_type(&self) -> ContentType {
-        self.content_type.clone()
+    fn matches_method(&self, method: &RequestMethod) -> bool {
+        self.method == *method
     }
 
     fn handle_request(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
@@ -109,98 +107,9 @@ impl HttpMapping for FileMapping {
             .map_err(|e| format!("Failed to read file {}: {}", self.file_path, e))?;
         Ok(HttpResponse {
             status: StatusCode::Ok.status(),
-            headers: vec![("Content-Type".to_string(), self.content_type.to_string()),
+            headers: vec![("Content-Type".to_string(), ContentType::from_extension(self.file_path.split('.').last().unwrap_or("txt")).unwrap().to_string()),
                           ("Content-Length".to_string(), file_content.len().to_string())],
             body: Some(file_content),
-        })
-    }
-}
-
-pub struct DirectoryMapping {
-    pub url: String,
-    pub method: RequestMethod,
-    pub content_type: ContentType,
-    pub directory_path: String,
-}
-
-impl Clone for DirectoryMapping {
-    fn clone(&self) -> Self {
-        DirectoryMapping {
-            url: self.url.clone(),
-            method: self.method.clone(),
-            content_type: self.content_type.clone(),
-            directory_path: self.directory_path.clone(),
-        }
-    }
-}
-
-impl PartialEq for DirectoryMapping {
-    fn eq(&self, other: &Self) -> bool {
-        self.url == other.url && self.method == other.method && self.content_type == other.content_type && self.directory_path == other.directory_path
-    }
-}
-
-impl DirectoryMapping {
-    pub fn new(url: String, method: RequestMethod, content_type: ContentType, directory_path: String) -> Self {
-        DirectoryMapping {
-            url,
-            method,
-            content_type,
-            directory_path,
-        }
-    }
-}
-
-impl HttpMapping for DirectoryMapping {
-    fn matches_url(&self, url: &str) -> bool {
-        // Check if the URL matches the pattern
-        if self.url == "*" {
-            return true; // Matches all URLs
-        }
-
-        let path = url.split(&['?', '#'][..]).next().unwrap_or(url);
-        if self.url == path {
-            return true; // Exact match
-        }
-        let pattern_parts: Vec<&str> =
-            self.url.trim_matches('/').split('/').collect();
-        let url_parts: Vec<&str> =
-            path.trim_matches('/').split('/').collect();
-        if pattern_parts.len() != url_parts.len() {
-            return false;
-        }
-        for (pattern, part) in pattern_parts.iter().zip(url_parts.iter()) {
-            if pattern != &"*" && pattern != part {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn matches_method(&self, method: &RequestMethod) -> bool {
-        self.method == *method
-    }
-
-    fn get_content_type(&self) -> ContentType {
-        self.content_type.clone()
-    }
-
-    fn handle_request(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
-        let dir_content = std::fs::read_dir(&self.directory_path)
-            .map_err(|e| format!("Failed to read directory {}: {}", self.directory_path, e))?;
-
-        let mut body = String::new();
-        for entry in dir_content {
-            let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-            body.push_str(&format!("{}\n", entry.file_name().to_string_lossy()));
-        }
-
-        Ok(HttpResponse {
-            status: StatusCode::Ok.status(),
-            headers: vec![("Content-Type".to_string(), self.content_type.to_string()),
-                          ("Content-Length".to_string(), body.len().to_string())],
-            body: Some(body),
         })
     }
 }
@@ -238,17 +147,14 @@ pub trait HttpServerClient {
 }
 
 mod tests {
-    use super::*;
-    use crate::http::shared::HttpVersion;
-    use std::fs;
-    use std::io::Write;
+    use crate::http::server::{FileMapping, HttpMapping};
+    use crate::http::shared::RequestMethod;
 
     #[test]
     fn test_file_mapping() {
         let mapping = FileMapping::new(
             "/test/*".to_string(),
             RequestMethod::Get,
-            ContentType::TextPlain,
             "test.txt".to_string(),
         );
 
@@ -256,32 +162,5 @@ mod tests {
         assert!(!mapping.matches_url("/other/123"));
         assert!(mapping.matches_method(&RequestMethod::Get));
         assert!(!mapping.matches_method(&RequestMethod::Post));
-    }
-
-    #[test]
-    fn test_directory_mapping_handle_request() {
-        let tmp_dir = std::env::temp_dir().join("httpserver_dir_test");
-        let _ = fs::remove_dir_all(&tmp_dir); // clean before
-        fs::create_dir_all(&tmp_dir).unwrap();
-        let mut f = fs::File::create(tmp_dir.join("file1.txt")).unwrap();
-        writeln!(f, "hello").unwrap();
-
-        let mapping = DirectoryMapping::new(
-            "/dir".to_string(),
-            RequestMethod::Get,
-            ContentType::TextPlain,
-            tmp_dir.to_str().unwrap().to_string(),
-        );
-
-        assert!(mapping.matches_url("/dir"));
-        assert!(mapping.matches_method(&RequestMethod::Get));
-
-        let req = HttpRequest::new(RequestMethod::Get, "/dir".into(), vec![], None);
-        let resp = mapping.handle_request(&req).unwrap();
-        assert_eq!(resp.status.code, 200);
-        let body = resp.body.unwrap();
-        assert!(body.contains("file1.txt"));
-
-        fs::remove_dir_all(&tmp_dir).unwrap();
     }
 }

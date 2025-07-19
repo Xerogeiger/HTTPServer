@@ -310,59 +310,127 @@ impl Display for RequestMethod {
     }
 }
 
+use std::fmt;
+use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentType {
     TextPlain,
     TextHtml,
+    TextCss,
     ApplicationJson,
     ApplicationXml,
+    ApplicationJavascript,
+    ImagePng,
+    ImageJpeg,
+    ImageGif,
+    ImageSvg,
+    ImageIco,
+    ImageWebp,
+    AudioMpeg,
+    AudioWav,
+    AudioOgg,
+    FontWoff,
+    FontWoff2,
+    FontTtf,
+    FontOtf,
+    VideoMp4,
 }
 
 impl ContentType {
+    /// Parse from a MIME‐type string
     pub fn from_str(s: &str) -> Option<ContentType> {
         match s {
-            "text/plain" => Some(ContentType::TextPlain),
-            "text/html" => Some(ContentType::TextHtml),
-            "application/json" => Some(ContentType::ApplicationJson),
-            "application/xml" => Some(ContentType::ApplicationXml),
-            _ => None,
+            "text/plain"                     => Some(ContentType::TextPlain),
+            "text/html"                      => Some(ContentType::TextHtml),
+            "text/css"                       => Some(ContentType::TextCss),
+            "application/json"               => Some(ContentType::ApplicationJson),
+            "application/xml"                => Some(ContentType::ApplicationXml),
+            "application/javascript"
+            | "application/x-javascript"
+            | "text/javascript"              => Some(ContentType::ApplicationJavascript),
+            "image/png"                      => Some(ContentType::ImagePng),
+            "image/jpeg" | "image/jpg"       => Some(ContentType::ImageJpeg),
+            "image/gif"                      => Some(ContentType::ImageGif),
+            "image/svg+xml"                  => Some(ContentType::ImageSvg),
+            "image/x-icon" | "image/vnd.microsoft.icon"
+            => Some(ContentType::ImageIco),
+            "image/webp"                     => Some(ContentType::ImageWebp),
+            "audio/mpeg"                     => Some(ContentType::AudioMpeg),
+            "audio/wav"                      => Some(ContentType::AudioWav),
+            "audio/ogg"                      => Some(ContentType::AudioOgg),
+            "font/woff"                      => Some(ContentType::FontWoff),
+            "font/woff2"                     => Some(ContentType::FontWoff2),
+            "font/ttf"                       => Some(ContentType::FontTtf),
+            "font/otf"                       => Some(ContentType::FontOtf),
+            "video/mp4"                      => Some(ContentType::VideoMp4),
+            _                                => None,
         }
+    }
+
+    /// Guess from a file‐extension like "html", "png", "woff2", etc.
+    pub fn from_extension(ext: &str) -> Option<ContentType> {
+        match ext.to_lowercase().as_str() {
+            "html" | "htm"                  => Some(ContentType::TextHtml),
+            "txt"                           => Some(ContentType::TextPlain),
+            "css"                           => Some(ContentType::TextCss),
+            "json"                          => Some(ContentType::ApplicationJson),
+            "xml"                           => Some(ContentType::ApplicationXml),
+            "js" | "mjs" | "cjs"            => Some(ContentType::ApplicationJavascript),
+            "png"                           => Some(ContentType::ImagePng),
+            "jpeg" | "jpg"                  => Some(ContentType::ImageJpeg),
+            "gif"                           => Some(ContentType::ImageGif),
+            "svg"                           => Some(ContentType::ImageSvg),
+            "ico"                           => Some(ContentType::ImageIco),
+            "webp"                          => Some(ContentType::ImageWebp),
+            "mp3"                           => Some(ContentType::AudioMpeg),
+            "wav"                           => Some(ContentType::AudioWav),
+            "ogg"                           => Some(ContentType::AudioOgg),
+            "woff"                          => Some(ContentType::FontWoff),
+            "woff2"                         => Some(ContentType::FontWoff2),
+            "ttf"                           => Some(ContentType::FontTtf),
+            "otf"                           => Some(ContentType::FontOtf),
+            "mp4"                           => Some(ContentType::VideoMp4),
+            _                               => None,
+        }
+    }
+
+    /// Pull the extension off a `Path` and feed into `from_extension`
+    pub fn from_path(path: &Path) -> Option<ContentType> {
+        path.extension()
+            .and_then(|os| os.to_str())
+            .and_then(ContentType::from_extension)
     }
 }
 
-impl Clone for ContentType {
-    fn clone(&self) -> Self {
-        match self {
-            ContentType::TextPlain => ContentType::TextPlain,
-            ContentType::TextHtml => ContentType::TextHtml,
-            ContentType::ApplicationJson => ContentType::ApplicationJson,
-            ContentType::ApplicationXml => ContentType::ApplicationXml,
-        }
-    }
-}
-
-impl PartialEq for ContentType {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ContentType::TextPlain, ContentType::TextPlain) => true,
-            (ContentType::TextHtml, ContentType::TextHtml) => true,
-            (ContentType::ApplicationJson, ContentType::ApplicationJson) => true,
-            (ContentType::ApplicationXml, ContentType::ApplicationXml) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Display for ContentType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str: &'static str = match self {
-            ContentType::TextPlain => "text/plain",
-            ContentType::TextHtml => "text/html",
-            ContentType::ApplicationJson => "application/json",
-            ContentType::ApplicationXml => "application/xml",
+impl fmt::Display for ContentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mime = match self {
+            ContentType::TextPlain            => "text/plain",
+            ContentType::TextHtml             => "text/html",
+            ContentType::TextCss              => "text/css",
+            ContentType::ApplicationJson      => "application/json",
+            ContentType::ApplicationXml       => "application/xml",
+            ContentType::ApplicationJavascript=> "application/javascript",
+            ContentType::ImagePng             => "image/png",
+            ContentType::ImageJpeg            => "image/jpeg",
+            ContentType::ImageGif             => "image/gif",
+            ContentType::ImageSvg             => "image/svg+xml",
+            ContentType::ImageIco             => "image/x-icon",
+            ContentType::ImageWebp            => "image/webp",
+            ContentType::AudioMpeg            => "audio/mpeg",
+            ContentType::AudioWav             => "audio/wav",
+            ContentType::AudioOgg             => "audio/ogg",
+            ContentType::FontWoff             => "font/woff",
+            ContentType::FontWoff2            => "font/woff2",
+            ContentType::FontTtf              => "font/ttf",
+            ContentType::FontOtf              => "font/otf",
+            ContentType::VideoMp4             => "video/mp4",
         };
-        write!(f, "{}", str)
+        write!(f, "{}", mime)
     }
 }
+
 
 pub struct HttpRequest {
     pub method: RequestMethod,
