@@ -176,13 +176,17 @@ impl HttpClient for HttpV11Client {
         let mut body_bytes = Vec::new();
         let is_chunked = headers
             .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.eq_ignore_ascii_case("chunked"));
+            .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") &&
+                v.eq_ignore_ascii_case("chunked"));
+        let is_gzip = headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("content-encoding") &&
+                v.eq_ignore_ascii_case("gzip"));
         if is_chunked {
             body_bytes = HttpV11Client::read_chunked_body(&mut reader).map_err(|e| e.to_string())?;
         } else if let Some((_, v)) = headers
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        {
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length")) {
             let len: usize = v.parse().map_err(|_| "Invalid Content-Length")?;
             let mut buf = vec![0; len];
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
@@ -194,10 +198,7 @@ impl HttpClient for HttpV11Client {
 
         // 4) Handle gzip
         let mut final_body = body_bytes;
-        if headers
-            .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("content-encoding") && v.eq_ignore_ascii_case("gzip"))
-        {
+        if is_gzip {
             let d = GzDecoder::load(&final_body[..]);
             let decompressed = d.unwrap().decompress();
             final_body = decompressed.unwrap();
