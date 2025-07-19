@@ -125,7 +125,7 @@ impl HttpClient for HttpV10Client {
         Ok(HttpResponse {
             status: HttpStatus::new(status_code, status_text),
             headers,
-            body: Some(String::from_utf8_lossy(&body).to_string()),
+            body: Some(body),
         })
     }
 }

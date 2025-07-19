@@ -103,7 +103,7 @@ impl HttpMapping for FileMapping {
     }
 
     fn handle_request(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
-        let file_content = std::fs::read_to_string(&self.file_path)
+        let file_content = std::fs::read(&self.file_path)
             .map_err(|e| format!("Failed to read file {}: {}", self.file_path, e))?;
         Ok(HttpResponse {
             status: StatusCode::Ok.status(),
@@ -114,21 +114,26 @@ impl HttpMapping for FileMapping {
     }
 }
 
-pub fn dir_to_mappings(dir: &str) -> Result<Vec<Box<dyn HttpMapping + Send + Sync>>, String> {
+pub fn dir_to_mappings(dir: &str, prefix: Option<String>) -> Result<Vec<Box<dyn HttpMapping + Send + Sync>>, String> {
     let mut mappings: Vec<Box<dyn HttpMapping + Send + Sync>> = Vec::new();
+
+    let mut prefix = prefix;
+    if prefix.is_none() {
+        prefix = Some("".to_string());
+    }
+
     for entry in std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory {}: {}", dir, e))? {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
         let path = entry.path();
         if path.is_file() {
             if let Some(ext) = path.extension() {
-                if ext == "html" || ext == "txt" {
-                    let url = format!("/{}", path.file_name().unwrap().to_string_lossy());
-                    mappings.push(Box::new(FileMapping::new(url, RequestMethod::Get, path.to_string_lossy().to_string())));
-                }
+                let url = format!("{}/{}", prefix.clone().unwrap(), path.file_name().unwrap().to_string_lossy());
+                mappings.push(Box::new(FileMapping::new(url, RequestMethod::Get, path.to_string_lossy().to_string())));
             }
         } else if path.is_dir() {
             // Recursively add mappings from subdirectories
-            let sub_mappings = dir_to_mappings(path.to_str().unwrap())?;
+            let sub_mappings = dir_to_mappings(path.to_str().unwrap(),
+                                               Some(prefix.clone().unwrap().to_string() + path.file_name().unwrap().to_str().unwrap()))?;
             mappings.extend(sub_mappings);
         }
     }
@@ -162,7 +167,7 @@ pub trait HttpServerClient {
         let response = HttpResponse {
             status,
             headers: vec![("Content-Type".to_string(), ContentType::TextPlain.to_string())],
-            body: Some(message.to_string()),
+            body: Some(message.as_bytes().to_vec()),
         };
         self.send_response(response)
     }

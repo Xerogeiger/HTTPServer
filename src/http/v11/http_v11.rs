@@ -204,8 +204,7 @@ impl HttpClient for HttpV11Client {
             final_body = decompressed.unwrap();
         }
 
-        let body_str = String::from_utf8_lossy(&final_body).to_string();
-        Ok(HttpResponse::new(HttpStatus::new(code, reason), headers, Some(body_str)))
+        Ok(HttpResponse::new(HttpStatus::new(code, reason), headers, Some(final_body)))
     }
 }
 
@@ -343,7 +342,7 @@ impl HttpServerClient for HttpV11ServerClient {
             write_chunked(&mut self.stream, body.as_ref()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
         } else {
             let body = r.body.clone().unwrap_or_default();
-            response_text = format!("{}{}{}", status_line, headers, body.to_string());
+            response_text = format!("{}{}{}", status_line, headers, String::from_utf8_lossy(&body));
             self.stream.write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response: {}", e))?;
         }
 
@@ -638,7 +637,7 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                         let err = HttpResponse::from_status(
                             StatusCode::BadRequest,
                             vec![("Content-Type".into(), TextPlain.to_string())],
-                            Some(e),
+                            Some(e.into_bytes()),
                         );
                         let _ = c.send_response(err);
                         continue; // Skip to the next iteration

@@ -504,11 +504,11 @@ impl Display for HttpRequest {
 pub struct HttpResponse {
     pub status: HttpStatus,
     pub headers: Vec<(String, String)>,
-    pub body: Option<String>,
+    pub body: Option<Vec<u8>>,
 }
 
 impl HttpResponse {
-    pub fn from_status(status: StatusCode, headers: Vec<(String, String)>, body: Option<String>) -> HttpResponse {
+    pub fn from_status(status: StatusCode, headers: Vec<(String, String)>, body: Option<Vec<u8>>) -> HttpResponse {
         HttpResponse {
             status: status.status(),
             headers,
@@ -516,7 +516,7 @@ impl HttpResponse {
         }
     }
 
-    pub fn new(status: HttpStatus, headers: Vec<(String, String)>, body: Option<String>) -> Self {
+    pub fn new(status: HttpStatus, headers: Vec<(String, String)>, body: Option<Vec<u8>>) -> Self {
         HttpResponse {
             status,
             headers,
@@ -549,7 +549,7 @@ impl HttpResponse {
         }
         response_text.push_str("\r\n"); // end of headers
         if let Some(body) = &self.body {
-            response_text.push_str(body);
+            response_text.push_str(&String::from_utf8_lossy(body));
         }
         response_text.into_bytes()
     }
