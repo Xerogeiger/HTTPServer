@@ -528,3 +528,80 @@ pub fn write_chunked<W: Write>(stream: &mut W, mut data: &[u8]) -> io::Result<()
     stream.flush()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn test_http_version_parsing_and_display() {
+        assert!(HttpVersion::from_str("HTTP/1.0") == Some(HttpVersion::V10));
+        assert!(HttpVersion::from_str("HTTP/1.1") == Some(HttpVersion::V11));
+        assert!(HttpVersion::from_str("HTTP/2") == Some(HttpVersion::V2));
+        assert!(HttpVersion::from_str("HTTP/3") == Some(HttpVersion::V3));
+        assert!(HttpVersion::from_str("HTTP/0.9").is_none());
+        assert_eq!(HttpVersion::V11.to_string(), "HTTP/1.1");
+    }
+
+    #[test]
+    fn test_http_version_create_server_client() {
+        // Supported server/client combinations
+        assert!(HttpVersion::V11.create_server(0).is_ok());
+        assert!(HttpVersion::V10
+            .create_client(IpAddr::V4(Ipv4Addr::LOCALHOST), 80)
+            .is_ok());
+
+        // Unsupported variants should return errors
+        assert!(HttpVersion::V10.create_server(0).is_err());
+        assert!(HttpVersion::V11
+            .create_client(IpAddr::V4(Ipv4Addr::LOCALHOST), 80)
+            .is_err());
+        assert!(HttpVersion::V2.create_server(0).is_err());
+        assert!(HttpVersion::V2
+            .create_client(IpAddr::V4(Ipv4Addr::LOCALHOST), 80)
+            .is_err());
+        assert!(HttpVersion::V3.create_server(0).is_err());
+    }
+
+    #[test]
+    fn test_request_and_response_bytes() {
+        let req = HttpRequest::new(
+            RequestMethod::Post,
+            "/submit".into(),
+            vec![("Content-Length".into(), "4".into())],
+            Some("data".into()),
+        );
+        let req_bytes = String::from_utf8(req.get_bytes()).unwrap();
+        assert!(req_bytes.starts_with("POST /submit HTTP/1.1"));
+        assert!(req_bytes.contains("\r\n\r\ndata"));
+
+        let resp = HttpResponse::from_status(
+            StatusCode::Ok,
+            vec![("Content-Type".into(), ContentType::TextPlain.to_string())],
+            None,
+        );
+        let resp_bytes = String::from_utf8(resp.get_bytes()).unwrap();
+        assert!(resp_bytes.contains("Content-Length: 0"));
+        assert!(resp_bytes.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn test_write_chunked() {
+        let data = vec![b'a'; 3000];
+        let mut out = Vec::new();
+        write_chunked(&mut out, &data).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        // should contain two full chunks of 1024 and one remainder
+        assert!(s.starts_with("400\r\n"));
+        assert!(s.ends_with("0\r\n\r\n"));
+    }
+
+    #[test]
+    fn test_parsing_enums_from_str() {
+        assert!(RequestMethod::from_str("GET") == Some(RequestMethod::Get));
+        assert!(ContentType::from_str("text/html") == Some(ContentType::TextHtml));
+        assert!(RequestMethod::from_str("UNKNOWN").is_none());
+        assert!(ContentType::from_str("invalid/type").is_none());
+    }
+}

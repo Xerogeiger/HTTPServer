@@ -240,6 +240,8 @@ pub trait HttpServerClient {
 mod tests {
     use super::*;
     use crate::http::shared::HttpVersion;
+    use std::fs;
+    use std::io::Write;
 
     #[test]
     fn test_file_mapping() {
@@ -254,5 +256,32 @@ mod tests {
         assert!(!mapping.matches_url("/other/123"));
         assert!(mapping.matches_method(&RequestMethod::Get));
         assert!(!mapping.matches_method(&RequestMethod::Post));
+    }
+
+    #[test]
+    fn test_directory_mapping_handle_request() {
+        let tmp_dir = std::env::temp_dir().join("httpserver_dir_test");
+        let _ = fs::remove_dir_all(&tmp_dir); // clean before
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let mut f = fs::File::create(tmp_dir.join("file1.txt")).unwrap();
+        writeln!(f, "hello").unwrap();
+
+        let mapping = DirectoryMapping::new(
+            "/dir".to_string(),
+            RequestMethod::Get,
+            ContentType::TextPlain,
+            tmp_dir.to_str().unwrap().to_string(),
+        );
+
+        assert!(mapping.matches_url("/dir"));
+        assert!(mapping.matches_method(&RequestMethod::Get));
+
+        let req = HttpRequest::new(RequestMethod::Get, "/dir".into(), vec![], None);
+        let resp = mapping.handle_request(&req).unwrap();
+        assert_eq!(resp.status.code, 200);
+        let body = resp.body.unwrap();
+        assert!(body.contains("file1.txt"));
+
+        fs::remove_dir_all(&tmp_dir).unwrap();
     }
 }

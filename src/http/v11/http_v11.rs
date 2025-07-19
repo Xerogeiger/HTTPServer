@@ -712,3 +712,44 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
     // Thread handle is returned, or `None` if the client is not connected
     Ok(Some(handle))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_request_success() {
+        let req = HttpRequest::new(
+            RequestMethod::Get,
+            "/".into(),
+            vec![("Host".into(), "example.com".into())],
+            None,
+        );
+        assert!(validate_request(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_request_errors() {
+        // Missing host
+        let req = HttpRequest::new(RequestMethod::Get, "/".into(), vec![], None);
+        assert!(validate_request(&req).is_err());
+
+        // Body without length
+        let req = HttpRequest::new(
+            RequestMethod::Post,
+            "/".into(),
+            vec![("Host".into(), "a".into()), ("Content-Type".into(), "text/plain".into())],
+            Some("body".into()),
+        );
+        assert!(validate_request(&req).is_err());
+
+        // Invalid header name
+        let req = HttpRequest::new(
+            RequestMethod::Get,
+            "/".into(),
+            vec![("Bad Header".into(), "v".into()), ("Host".into(), "a".into())],
+            None,
+        );
+        assert!(validate_request(&req).is_err());
+    }
+}
