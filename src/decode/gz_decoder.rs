@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::fs::File;
 use std::io;
-use std::io::{Read, BufReader, BufRead};
-use crate::decode::gz_shared::{fixed_dist_lens, fixed_lit_len_lens, build_codes, generate_crc32_table, GzHeader, CODE_LENGTH_ORDER, DIST_BASE, LENGTH_BASE};
+use crate::decode::gz_shared::{
+    fixed_dist_lens, fixed_lit_len_lens, build_codes, generate_crc32_table,
+    compute_crc16, GzHeader, CODE_LENGTH_ORDER, DIST_BASE, LENGTH_BASE,
+};
 use crate::decode::lz77::{lz77_reconstruct, Token};
 
 struct BitReader<'a> {
@@ -234,18 +235,17 @@ fn decode_huffman_data(
 
 impl GzDecoder {
     pub fn load(data: &[u8]) -> Result<GzDecoder, io::Error> {
-        let mut reader = BufReader::new(data);
+        if data.len() < 10 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "GZip header too short"));
+        }
 
-        // 1) Read fixed 10-byte header
-        let mut header_bytes = [0u8; 10];
-        reader.read_exact(&mut header_bytes)?;
-
-        let magic_number = u16::from_le_bytes([header_bytes[0], header_bytes[1]]);
-        let compression_method = header_bytes[2];
-        let flags = header_bytes[3];
-        let modification_time = u32::from_le_bytes([header_bytes[4], header_bytes[5], header_bytes[6], header_bytes[7]]);
-        let extra_flags = header_bytes[8];
-        let operating_system = header_bytes[9];
+        let mut idx = 0usize;
+        let magic_number = u16::from_le_bytes([data[idx], data[idx+1]]); idx += 2;
+        let compression_method = data[idx]; idx += 1;
+        let flags = data[idx]; idx += 1;
+        let modification_time = u32::from_le_bytes([data[idx], data[idx+1], data[idx+2], data[idx+3]]); idx += 4;
+        let extra_flags = data[idx]; idx += 1;
+        let operating_system = data[idx]; idx += 1;
 
         let is_ascii = flags & 0x01 != 0;
         let has_crc = flags & 0x02 != 0;
@@ -256,12 +256,16 @@ impl GzDecoder {
         // 2) Optional fields
         // Extra field
         let extra_field = if has_extra_field {
-            // XLEN is next 2 bytes, little-endian
-            let mut xlen_bytes = [0u8; 2];
-            reader.read_exact(&mut xlen_bytes)?;
-            let xlen = u16::from_le_bytes(xlen_bytes) as usize;
-            let mut buf = vec![0u8; xlen];
-            reader.read_exact(&mut buf)?;
+            if idx + 2 > data.len() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "GZip header too short"));
+            }
+            let xlen = u16::from_le_bytes([data[idx], data[idx+1]]) as usize;
+            idx += 2;
+            if idx + xlen > data.len() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "GZip header too short"));
+            }
+            let buf = data[idx..idx+xlen].to_vec();
+            idx += xlen;
             Some(buf)
         } else {
             None
@@ -269,36 +273,51 @@ impl GzDecoder {
 
         // Original filename
         let filename = if has_filename {
-            let mut buf = Vec::new();
-            reader.read_until(0, &mut buf)?;
-            if buf.ends_with(&[0]) { buf.pop(); }
-            Some(String::from_utf8_lossy(&buf).into_owned())
+            let start = idx;
+            while idx < data.len() && data[idx] != 0 { idx += 1; }
+            if idx >= data.len() { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "GZip header too short")); }
+            let name = String::from_utf8_lossy(&data[start..idx]).into_owned();
+            idx += 1; // skip null
+            Some(name)
         } else {
             None
         };
 
         // File comment
         let comment = if has_comment {
-            let mut buf = Vec::new();
-            reader.read_until(0, &mut buf)?;
-            if buf.ends_with(&[0]) { buf.pop(); }
-            Some(String::from_utf8_lossy(&buf).into_owned())
+            let start = idx;
+            while idx < data.len() && data[idx] != 0 { idx += 1; }
+            if idx >= data.len() { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "GZip header too short")); }
+            let c = String::from_utf8_lossy(&data[start..idx]).into_owned();
+            idx += 1; // skip null
+            Some(c)
         } else {
             None
         };
 
-        // 3) Read the rest: compressed data + 8-byte trailer
-        let mut rest = Vec::new();
-        reader.read_to_end(&mut rest)?;
-        if rest.len() < 8 {
+        // Header CRC
+        if has_crc {
+            if idx + 2 > data.len() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "GZip header too short"));
+            }
+            let stored = u16::from_le_bytes([data[idx], data[idx+1]]);
+            let calc = compute_crc16(&data[..idx]);
+            if stored != calc {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Header CRC mismatch"));
+            }
+            idx += 2;
+        }
+
+        // 3) Remaining bytes: compressed data + 8-byte trailer
+        if data.len() < idx + 8 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "GZip file too short"));
         }
-        let trailer_pos = rest.len() - 8;
-        let compressed_data = rest[..trailer_pos].to_vec();
+        let trailer_pos = data.len() - 8;
+        let compressed_data = data[idx..trailer_pos].to_vec();
 
         // 4) Parse trailer
-        let crc32 = u32::from_le_bytes(rest[trailer_pos..trailer_pos+4].try_into().unwrap());
-        let isize = u32::from_le_bytes(rest[trailer_pos+4..].try_into().unwrap());
+        let crc32 = u32::from_le_bytes(data[trailer_pos..trailer_pos+4].try_into().unwrap());
+        let isize = u32::from_le_bytes(data[trailer_pos+4..].try_into().unwrap());
 
         Ok(GzDecoder {
             header: GzHeader {
@@ -434,5 +453,39 @@ mod tests {
         assert_eq!(sym1, 65);
         let sym2 = decode_symbol(&mut br, &codes, 1).unwrap();
         assert_eq!(sym2, 66);
+    }
+
+    #[test]
+    fn test_load_with_extra_and_crc() {
+        use crate::decode::gz_encoder::DeflateEncoder;
+        use crate::decode::gz_shared::{compute_crc32, compute_crc16, DeflateBlockType};
+
+        let mut hdr = GzHeader::new();
+        hdr.set_flags(0x04 | 0x02); // FEXTRA | FHCRC
+        hdr.set_extra_field(vec![0xAA, 0xBB, 0xCC]);
+        let header_bytes = hdr.to_bytes();
+
+        let deflated = DeflateEncoder::new(DeflateBlockType::FixedHuffman)
+            .encode(b"hi")
+            .unwrap();
+
+        let mut gzip = Vec::new();
+        gzip.extend_from_slice(&header_bytes);
+        gzip.extend_from_slice(&deflated);
+        let crc32 = compute_crc32(b"hi");
+        gzip.extend_from_slice(&crc32.to_le_bytes());
+        gzip.extend_from_slice(&(2u32).to_le_bytes());
+
+        let decoder = GzDecoder::load(&gzip).unwrap();
+        assert!(decoder.header.has_extra_field);
+        assert!(decoder.header.has_crc);
+        assert_eq!(decoder.header.extra_field.as_ref().unwrap(), &vec![0xAA,0xBB,0xCC]);
+        // verify header CRC parsed correctly by recomputing
+        let calc = compute_crc16(&gzip[..header_bytes.len()-2]);
+        let stored = u16::from_le_bytes([header_bytes[header_bytes.len()-2], header_bytes[header_bytes.len()-1]]);
+        assert_eq!(calc, stored);
+
+        let out = decoder.decompress().unwrap();
+        assert_eq!(out, b"hi");
     }
 }

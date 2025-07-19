@@ -128,31 +128,34 @@ impl GzHeader {
         header.push(self.extra_flags);
         header.push(self.operating_system);
 
-        if self.has_filename {
-            if let Some(ref filename) = self.filename {
-                header.extend(filename.as_bytes());
-                header.push(0); // Null terminator
+        if self.has_extra_field {
+            if let Some(ref extra_field) = self.extra_field {
+                let xlen = extra_field.len() as u16;
+                header.extend(&xlen.to_le_bytes());
+                header.extend(extra_field);
+            } else {
+                header.extend(&0u16.to_le_bytes());
             }
         }
 
-        if self.has_extra_field {
-            if let Some(ref extra_field) = self.extra_field {
-                header.extend(extra_field);
+        if self.has_filename {
+            if let Some(ref filename) = self.filename {
+                header.extend(filename.as_bytes());
             }
+            header.push(0);
         }
 
         if self.has_comment {
             if let Some(ref comment) = self.comment {
                 header.extend(comment.as_bytes());
-                header.push(0); // Null terminator
             }
+            header.push(0);
         }
 
-        print!("Header Bytes: ");
-        for byte in &header {
-            print!("{:02x} ", byte);
+        if self.has_crc {
+            let crc = compute_crc16(&header);
+            header.extend(&crc.to_le_bytes());
         }
-        println!();
 
         header
     }
@@ -173,6 +176,20 @@ pub fn generate_crc32_table() -> [u32; 256] {
         table[i as usize] = c;
     }
     table
+}
+
+pub fn compute_crc32(data: &[u8]) -> u32 {
+    let table = generate_crc32_table();
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        let idx = ((crc ^ b as u32) & 0xFF) as usize;
+        crc = (crc >> 8) ^ table[idx];
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+pub fn compute_crc16(data: &[u8]) -> u16 {
+    (compute_crc32(data) & 0xFFFF) as u16
 }
 
 /// Build a canonical Huffman `code → symbol` lookup table.
