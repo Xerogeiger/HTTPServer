@@ -9,8 +9,8 @@ mod decode;
 fn main() {
     let mut server = V11.create_server(1234).unwrap();
     //Create an http 1.1 server on a new thread
-    server.add_mappings(dir_to_mappings("./Site/static/", None).expect("Failed to create mappings")).expect("Failed to add mapping");
-    server.add_mappings(dir_to_mappings("./Site/templates/", None).expect("Failed to create mappings")).expect("Failed to add mapping");
+    server.add_mappings(dir_to_mappings("./Site/static/", None).expect("Failed to create mappings")).expect("Failed to add mappings");
+    server.add_mappings(dir_to_mappings("./Site/templates/", None).expect("Failed to create mappings")).expect("Failed to add mappings");
     server.start().expect("Failed to start server");
 
     //Create an http 1.0 client
