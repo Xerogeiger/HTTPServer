@@ -4,7 +4,7 @@ use std::net::{IpAddr, TcpListener, TcpStream};
 use crate::http::server::{HttpMapping, ServerStatus};
 use crate::http::server::HttpServer;
 use crate::http::server::{HttpServerClient};
-use crate::http::shared::{write_chunked, HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
+use crate::http::shared::{read_chunked_body, write_chunked, HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
 use crate::http::shared::RequestMethod::Get;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,31 +45,6 @@ impl HttpV11Client {
                 Ok(self.stream.as_mut().unwrap())
             }
         }
-    }
-
-    /// Read a chunked transfer-encoded body into a Vec<u8>.
-    fn read_chunked_body(reader: &mut BufReader<&TcpStream>) -> io::Result<Vec<u8>> {
-        let mut body = Vec::new();
-        loop {
-            // Read the chunk-size line
-            let mut size_line = String::new();
-            reader.read_line(&mut size_line)?;
-            let size = usize::from_str_radix(size_line.trim(), 16)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            if size == 0 {
-                // Consume trailing CRLF
-                let mut crlf = [0; 2];
-                reader.read_exact(&mut crlf)?;
-                break;
-            }
-            let mut chunk = vec![0; size];
-            reader.read_exact(&mut chunk)?;
-            body.extend_from_slice(&chunk);
-            // consume CRLF
-            let mut crlf = [0; 2];
-            reader.read_exact(&mut crlf)?;
-        }
-        Ok(body)
     }
 }
 
@@ -190,7 +165,7 @@ impl HttpClient for HttpV11Client {
             .any(|(k, v)| k.eq_ignore_ascii_case("content-encoding") &&
                 v.eq_ignore_ascii_case("gzip"));
         if is_chunked {
-            body_bytes = HttpV11Client::read_chunked_body(&mut reader).map_err(|e| e.to_string())?;
+            body_bytes = read_chunked_body(&mut reader).map_err(|e| e.to_string())?;
         } else if let Some((_, v)) = headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-length")) {
@@ -242,76 +217,59 @@ impl HttpServerClient for HttpV11ServerClient {
             return Err("Client is not connected".to_string());
         }
 
-        let mut buffer = [0; 1024];
-        match self.stream.read(&mut buffer) {
-            Ok(size) if size > 0 => {
-                let request_text = String::from_utf8_lossy(&buffer[..size]);
-                let mut lines = request_text.lines();
-                let request_line = lines.next().ok_or("Empty request line")?;
-                let parts: Vec<&str> = request_line.split_whitespace().collect();
-                if parts.len() < 2 {
-                    return Err("Invalid request line".to_string());
-                }
-                let method = parts[0].to_string();
-                let path = parts[1].to_string();
-                let headers: Vec<(String, String)> = lines.clone()
-                    .filter_map(|line| {
-                        let mut header_parts = line.splitn(2, ':');
-                        if let (Some(key), Some(value)) = (header_parts.next(), header_parts.next()) {
-                            Some((key.trim().to_string(), value.trim().to_string()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if(headers.is_empty()) {
-                    return Err("No headers found".to_string());
-                }
-
-                let content_length = headers.iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
-                    .and_then(|(_, v)| v.parse::<usize>().ok())
-                    .unwrap_or(0);
-
-                if content_length == 0 {
-                    // If content length is 0, there is no body
-                    return Ok(Some(HttpRequest {
-                        method: RequestMethod::from_str(&method).unwrap_or(Get),
-                        path,
-                        headers,
-                        body: None,
-                    }));
-                }
-
-                let body = if lines.clone().any(|line| !line.is_empty()) {
-                    // If there's an empty line, the body starts after it
-                    let body_lines: Vec<String> = lines.skip_while(|line| line.is_empty()).map(String::from).collect();
-                    if body_lines.is_empty() {
-                        None
-                    } else {
-                        Some(body_lines.join("\n"))
-                    }
-                } else {
-                    None
-                };
-                println!("Received request: {} {} with headers: {:?}", method, path, headers);
-
-                Ok(Some(HttpRequest {
-                    method: RequestMethod::from_str(&method).unwrap_or(Get),
-                    path,
-                    headers,
-                    body,
-                }))
+        let mut reader = BufReader::new(&self.stream);
+        // Read the request line (method, path, version)
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line).expect("Expected request line") == 0 {
+            return Ok(None); // no data (connection closed cleanly)
+        }
+        let parts: Vec<&str> = request_line.trim_end().split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err("Invalid request line".into());
+        }
+        let method_str = parts[0];
+        let path_str = parts[1];
+        let version_str = parts[2];  // e.g. "HTTP/1.1"
+        let method = RequestMethod::from_str(method_str).unwrap_or(RequestMethod::Get);
+        // Read headers until blank line
+        let mut headers = Vec::new();
+        loop {
+            let mut header_line = String::new();
+            reader.read_line(&mut header_line).expect("Expected header line");
+            if header_line == "\r\n" || header_line == "\n" {
+                break; // reached the empty line
             }
-            Ok(_) => Err("No data received".to_string()),
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    return Ok(None)
-                }
-                Err(format!("Failed to read request: {}", e))
+            if let Some((key, value)) = header_line.split_once(':') {
+                headers.push((key.trim().to_string(), value.trim().to_string()));
+            } else {
+                return Err("Malformed header line".into());
             }
         }
+        // Check for required Host header in HTTP/1.1
+        if version_str == "HTTP/1.1" && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("Host")) {
+            return Err("Missing required Host header".into());
+        }
+        // Determine if there's a body and handle it
+        let mut body: Option<Vec<u8>> = None;
+        if let Some((_, val)) = headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length")) {
+            // Content-Length present
+            if let Ok(len) = val.parse::<usize>() {
+                let mut buf = vec![0; len];
+                reader.read_exact(&mut buf)
+                    .map_err(|e| format!("Failed to read request body: {}", e))?;
+                body = Some(buf);
+            }
+        } else if headers.iter().any(|(k, v)|
+            k.eq_ignore_ascii_case("Transfer-Encoding") && v.eq_ignore_ascii_case("chunked")) {
+            // Transfer-Encoding: chunked present – decode the chunked body
+            body = Some(read_chunked_body(&mut reader).map_err(|e| format!("Chunked decoding failed: {}", e))?);
+        }
+        // Construct the HttpRequest
+        let request = HttpRequest::new(method, path_str.to_string(), headers,
+                                       body.map(|b| String::from_utf8_lossy(&b).into_owned()));
+
+        Ok(Some(request))
     }
 
     fn send_response(&mut self, response: HttpResponse) -> Result<(), String> {
