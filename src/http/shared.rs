@@ -28,7 +28,7 @@ impl HttpVersion {
     pub fn create_server(&self, port: u16) -> Result<Box<dyn HttpServer>, String> {
         match self {
             HttpVersion::V10 => Err("HTTP/1.0 server not implemented".to_string()),
-            HttpVersion::V11 => Ok(Box::new(HttpV11Server::new(port, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))))),
+            HttpVersion::V11 => Ok(Box::new(HttpV11Server::new(port, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))))),
             HttpVersion::V2 => Err("HTTP/2 server not implemented".to_string()),
             HttpVersion::V3 => Err("HTTP/3 server not implemented".to_string()),
         }

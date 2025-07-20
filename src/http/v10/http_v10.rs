@@ -54,7 +54,7 @@ impl HttpClient for HttpV10Client {
         req.headers.push(("Accept-Language".to_string(), "en-US,en;q=0.5".to_string()));
         req.headers.push(("Accept-Encoding".to_string(), "gzip, deflate".to_string()));
         req.headers.push(("Content-Length".to_string(),
-            req.body.as_ref().map_or("0".to_string(), |b| b.len().to_string())));
+                          req.body.as_ref().map_or("0".to_string(), |b| b.len().to_string())));
 
         let addr = format!("{}:{}", self.host, self.port);
         let mut stream = TcpStream::connect(&addr)

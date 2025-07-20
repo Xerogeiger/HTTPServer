@@ -102,7 +102,6 @@ impl HttpClient for HttpV11Client {
 
     fn send_request(&mut self, req: HttpRequest) -> Result<HttpResponse, String> {
         // Mutable borrow to manage connection & write
-        let mut_self = self.ensure_connection().map_err(|e| e.to_string())?;
         let mut headers = self.default_headers.clone();
         headers.push(("Host".into(), format!("{}:{}", self.host, self.port)));
         headers.push(("Connection".into(), "keep-alive".into()));
@@ -121,15 +120,23 @@ impl HttpClient for HttpV11Client {
             raw.push_str(&body);
         }
 
-        // Send over the connection
-        let addr = format!("{}:{}", self.host, self.port);
-        let mut stream: TcpStream = TcpStream::connect(addr).expect("Failed to connect");
+        if self.stream.is_none() {
+            self.ensure_connection()
+                .map_err(|e| e.to_string())?;
+        }
+
+        let mut stream = self.stream
+            .take()
+            .expect("stream was just set so this is safe");
 
         stream.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
 
         // Read and parse response
-        self.receive_response(&stream)
+        let response = self.receive_response(&stream)?;
+        // Put the stream back for keep-alive
+        self.stream = Some(stream);
+        Ok(response)
     }
 
     fn receive_response(&self, stream: &TcpStream) -> Result<HttpResponse, String> {

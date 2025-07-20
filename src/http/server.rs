@@ -107,7 +107,7 @@ impl HttpMapping for FileMapping {
             .map_err(|e| format!("Failed to read file {}: {}", self.file_path, e))?;
         Ok(HttpResponse {
             status: StatusCode::Ok.status(),
-            headers: vec![("Content-Type".to_string(), ContentType::from_extension(self.file_path.split('.').last().unwrap_or("txt")).unwrap().to_string()),
+            headers: vec![("Content-Type".to_string(), self.get_content_type().to_string()),
                           ("Content-Length".to_string(), file_content.len().to_string())],
             body: Some(file_content),
         })
