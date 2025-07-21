@@ -221,6 +221,7 @@ impl HttpClient for HttpV11Client {
 struct HttpV11ServerClient {
     ip_address: IpAddr,
     stream: TcpStream,
+    reader: BufReader<TcpStream>,
     port: u16,
     connected: bool,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -228,9 +229,12 @@ struct HttpV11ServerClient {
 
 impl Clone for HttpV11ServerClient {
     fn clone(&self) -> Self {
+        let stream_clone = self.stream.try_clone().expect("Failed to clone stream");
+        let reader = BufReader::new(stream_clone.try_clone().expect("Failed to clone stream"));
         HttpV11ServerClient {
             ip_address: self.ip_address,
-            stream: self.stream.try_clone().expect("Failed to clone stream"),
+            stream: stream_clone,
+            reader,
             port: self.port,
             connected: self.connected,
             thread: None,
@@ -245,9 +249,9 @@ impl HttpServerClient for HttpV11ServerClient {
             return Err("Client is not connected".to_string());
         }
 
-        let mut buffered_reader = BufReader::new(&self.stream);
+        let reader = &mut self.reader;
         let mut request_line = String::new();
-        match buffered_reader.read_line(&mut request_line) {
+        match reader.read_line(&mut request_line) {
             Ok(0) => return Ok(None), // EOF, no request
             Ok(_) => {}
             Err(e) => return Err(format!("Failed to read request line: {}", e)),
@@ -279,7 +283,7 @@ impl HttpServerClient for HttpV11ServerClient {
         // Read headers
         loop {
             let mut header_line = String::new();
-            match buffered_reader.read_line(&mut header_line) {
+            match reader.read_line(&mut header_line) {
                 Ok(0) => break, // EOF, no more headers
                 Ok(_) => {}
                 Err(e) => return Err(format!("Failed to read header line: {}", e)),
@@ -300,7 +304,7 @@ impl HttpServerClient for HttpV11ServerClient {
             .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
             .and_then(|(_, v)| v.parse::<usize>().ok()) {
             let mut body_bytes = vec![0; content_length];
-            buffered_reader.read_exact(&mut body_bytes)
+            reader.read_exact(&mut body_bytes)
                 .map_err(|e| format!("Failed to read request body: {}", e))?;
             body = Some(body_bytes);
         } else if headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("Transfer-Encoding") && v.eq_ignore_ascii_case("chunked")) {
@@ -308,7 +312,7 @@ impl HttpServerClient for HttpV11ServerClient {
             let mut body_bytes = Vec::new();
             loop {
                 let mut size_line = String::new();
-                buffered_reader.read_line(&mut size_line)
+                reader.read_line(&mut size_line)
                     .map_err(|e| format!("Failed to read chunk size: {}", e))?;
                 let size = usize::from_str_radix(size_line.trim_end(), 16)
                     .map_err(|_| "Invalid chunk size".to_string())?;
@@ -316,12 +320,12 @@ impl HttpServerClient for HttpV11ServerClient {
                     break; // End of chunks
                 }
                 let mut chunk = vec![0; size];
-                buffered_reader.read_exact(&mut chunk)
+                reader.read_exact(&mut chunk)
                     .map_err(|e| format!("Failed to read chunk data: {}", e))?;
                 body_bytes.extend_from_slice(&chunk);
                 // Read the trailing CRLF
                 let mut crlf = [0; 2];
-                buffered_reader.read_exact(&mut crlf)
+                reader.read_exact(&mut crlf)
                     .map_err(|e| format!("Failed to read trailing CRLF: {}", e))?;
             }
             body = Some(body_bytes);
@@ -362,15 +366,15 @@ impl HttpServerClient for HttpV11ServerClient {
 
         if(chunked) {
             response_text = format!("{}{}", status_line, headers);
-            self.stream.write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
+            self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
             let body = r.body.clone().unwrap_or_default();
             let encoded = GzEncoder::new().encode(&body)
                 .map_err(|e| format!("Failed to encode response body: {}", e))?;
-            write_chunked(&mut self.stream, &encoded).map_err(|e| format!("Failed to write chunked response: {}", e))?;
+            write_chunked(self.reader.get_mut(), &encoded).map_err(|e| format!("Failed to write chunked response: {}", e))?;
         } else {
             let body = r.body.clone().unwrap_or_default();
             response_text = format!("{}{}{}", status_line, headers, String::from_utf8_lossy(&body));
-            self.stream.write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response: {}", e))?;
+            self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response: {}", e))?;
         }
 
         println!(
@@ -387,7 +391,7 @@ impl HttpServerClient for HttpV11ServerClient {
             return Err("Client is not connected".to_string());
         }
         // Simulate disconnecting
-        if let Err(e) = self.stream.shutdown(std::net::Shutdown::Both) {
+        if let Err(e) = self.reader.get_mut().shutdown(std::net::Shutdown::Both) {
             return Err(format!("Failed to disconnect: {}", e));
         }
         println!("Client disconnected from {}:{}", self.ip_address, self.port);
@@ -400,11 +404,13 @@ impl HttpServerClient for HttpV11ServerClient {
     }
 
     fn new(ip_address: IpAddr, port: u16, stream: TcpStream) -> Self {
+        let reader = BufReader::new(stream.try_clone().expect("Failed to clone stream"));
         HttpV11ServerClient {
             ip_address,
             port,
             connected: false,
             stream,
+            reader,
             thread: None,
         }
     }
@@ -777,5 +783,32 @@ mod tests {
             None,
         );
         assert!(validate_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_multiple_requests_single_connection() {
+        use std::net::{TcpListener, TcpStream, Shutdown};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (server_stream, _) = listener.accept().unwrap();
+            let mut client = HttpV11ServerClient::new(addr.ip(), addr.port(), server_stream);
+            client.connected = true;
+
+            let first = client.receive_request().unwrap().unwrap();
+            let second = client.receive_request().unwrap().unwrap();
+            (first, second)
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.write_all(b"GET /one HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        stream.write_all(b"GET /two HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+
+        let (req1, req2) = handle.join().unwrap();
+        assert_eq!(req1.path, "/one");
+        assert_eq!(req2.path, "/two");
     }
 }
