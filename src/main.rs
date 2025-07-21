@@ -22,6 +22,14 @@ fn main() {
         Err(e) => eprintln!("Failed to create client: {}", e),
     }
 
-    // Wait for the server thread to finish
-    server.join().expect("Server thread panicked");
+    loop {
+        // Wait for user input to exit
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).expect("Failed to read line");
+        if input.trim() == "exit" {
+            break;
+        }
+    }
+
+    server.stop().expect("Failed to stop server");
 }

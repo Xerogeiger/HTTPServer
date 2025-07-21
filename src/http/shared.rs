@@ -7,6 +7,7 @@ use crate::http::server::HttpServer;
 use crate::http::v10::http_v10::HttpV10Client;
 use crate::http::v11::http_v11::HttpV11Server;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpVersion {
     V10,
     V11,
@@ -53,29 +54,6 @@ impl HttpVersion {
     }
 }
 
-impl Clone for HttpVersion {
-    fn clone(&self) -> Self {
-        match self {
-            HttpVersion::V10 => HttpVersion::V10,
-            HttpVersion::V11 => HttpVersion::V11,
-            HttpVersion::V2 => HttpVersion::V2,
-            HttpVersion::V3 => HttpVersion::V3,
-        }
-    }
-}
-
-impl PartialEq for HttpVersion {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (HttpVersion::V10, HttpVersion::V10) => true,
-            (HttpVersion::V11, HttpVersion::V11) => true,
-            (HttpVersion::V2, HttpVersion::V2) => true,
-            (HttpVersion::V3, HttpVersion::V3) => true,
-            _ => false,
-        }
-    }
-}
-
 impl Display for HttpVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str: &'static str = match self {
@@ -88,6 +66,7 @@ impl Display for HttpVersion {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub enum StatusCode {
     Ok,
     Created,
@@ -100,6 +79,7 @@ pub enum StatusCode {
     InternalServerError
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpStatus {
     pub code: u16,
     pub text: String,
@@ -108,21 +88,6 @@ pub struct HttpStatus {
 impl HttpStatus {
     pub fn new(code: u16, text: String) -> Self {
         HttpStatus { code, text }
-    }
-}
-
-impl Clone for HttpStatus {
-    fn clone(&self) -> Self {
-        HttpStatus {
-            code: self.code,
-            text: self.text.clone(),
-        }
-    }
-}
-
-impl PartialEq for HttpStatus {
-    fn eq(&self, other: &Self) -> bool {
-        self.code == other.code && self.text == other.text
     }
 }
 
@@ -181,39 +146,6 @@ impl StatusCode {
     }
 }
 
-impl Clone for StatusCode {
-    fn clone(&self) -> Self {
-        match self {
-            StatusCode::Ok => StatusCode::Ok,
-            StatusCode::Created => StatusCode::Created,
-            StatusCode::Accepted => StatusCode::Accepted,
-            StatusCode::NoContent => StatusCode::NoContent,
-            StatusCode::BadRequest => StatusCode::BadRequest,
-            StatusCode::Unauthorized => StatusCode::Unauthorized,
-            StatusCode::Forbidden => StatusCode::Forbidden,
-            StatusCode::NotFound => StatusCode::NotFound,
-            StatusCode::InternalServerError => StatusCode::InternalServerError,
-        }
-    }
-}
-
-impl PartialEq for StatusCode {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (StatusCode::Ok, StatusCode::Ok) => true,
-            (StatusCode::Created, StatusCode::Created) => true,
-            (StatusCode::Accepted, StatusCode::Accepted) => true,
-            (StatusCode::NoContent, StatusCode::NoContent) => true,
-            (StatusCode::BadRequest, StatusCode::BadRequest) => true,
-            (StatusCode::Unauthorized, StatusCode::Unauthorized) => true,
-            (StatusCode::Forbidden, StatusCode::Forbidden) => true,
-            (StatusCode::NotFound, StatusCode::NotFound) => true,
-            (StatusCode::InternalServerError, StatusCode::InternalServerError) => true,
-            _ => false,
-        }
-    }
-}
-
 impl Display for StatusCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str: &'static str = match self {
@@ -231,6 +163,7 @@ impl Display for StatusCode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestMethod {
     Get,
     Post,
@@ -256,39 +189,6 @@ impl RequestMethod {
             "CONNECT" => Some(RequestMethod::Connect),
             "PATCH" => Some(RequestMethod::Patch),
             _ => None,
-        }
-    }
-}
-
-impl Clone for RequestMethod {
-    fn clone(&self) -> Self {
-        match self {
-            RequestMethod::Get => RequestMethod::Get,
-            RequestMethod::Post => RequestMethod::Post,
-            RequestMethod::Put => RequestMethod::Put,
-            RequestMethod::Delete => RequestMethod::Delete,
-            RequestMethod::Head => RequestMethod::Head,
-            RequestMethod::Options => RequestMethod::Options,
-            RequestMethod::Trace => RequestMethod::Trace,
-            RequestMethod::Connect => RequestMethod::Connect,
-            RequestMethod::Patch => RequestMethod::Patch,
-        }
-    }
-}
-
-impl PartialEq for RequestMethod {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (RequestMethod::Get, RequestMethod::Get) => true,
-            (RequestMethod::Post, RequestMethod::Post) => true,
-            (RequestMethod::Put, RequestMethod::Put) => true,
-            (RequestMethod::Delete, RequestMethod::Delete) => true,
-            (RequestMethod::Head, RequestMethod::Head) => true,
-            (RequestMethod::Options, RequestMethod::Options) => true,
-            (RequestMethod::Trace, RequestMethod::Trace) => true,
-            (RequestMethod::Connect, RequestMethod::Connect) => true,
-            (RequestMethod::Patch, RequestMethod::Patch) => true,
-            _ => false,
         }
     }
 }
@@ -431,52 +331,21 @@ impl fmt::Display for ContentType {
     }
 }
 
-
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: RequestMethod,
     pub path: String,
     pub headers: Vec<(String, String)>,
-    pub body: Option<String>,
+    pub body: Option<Vec<u8>>,
 }
 
 impl HttpRequest {
-    pub fn new(method: RequestMethod, path: String, headers: Vec<(String, String)>, body: Option<String>) -> Self {
+    pub fn new(method: RequestMethod, path: String, headers: Vec<(String, String)>, body: Option<Vec<u8>>) -> Self {
         HttpRequest {
             method,
             path,
             headers,
             body,
-        }
-    }
-}
-
-impl HttpRequest {
-    pub fn get_bytes(&self) -> Vec<u8> {
-        let mut request_text = format!("{} {} HTTP/1.1\r\n", self.method, self.path);
-        for (key, value) in &self.headers {
-            request_text.push_str(&format!("{}: {}\r\n", key, value));
-        }
-        request_text.push_str("\r\n"); // end of headers
-        if let Some(body) = &self.body {
-            request_text.push_str(body);
-        }
-        request_text.into_bytes()
-    }
-}
-
-impl PartialEq for HttpRequest {
-    fn eq(&self, other: &Self) -> bool {
-        self.method == other.method && self.path == other.path && self.headers == other.headers && self.body == other.body
-    }
-}
-
-impl Clone for HttpRequest {
-    fn clone(&self) -> Self {
-        HttpRequest {
-            method: self.method.clone(),
-            path: self.path.clone(),
-            headers: self.headers.clone(),
-            body: self.body.clone(),
         }
     }
 }
@@ -501,6 +370,7 @@ impl Display for HttpRequest {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpResponse {
     pub status: HttpStatus,
     pub headers: Vec<(String, String)>,
@@ -522,36 +392,6 @@ impl HttpResponse {
             headers,
             body,
         }
-    }
-}
-
-impl HttpResponse {
-    pub fn clone(&self) -> HttpResponse {
-        HttpResponse {
-            status: self.status.clone(),
-            headers: self.headers.clone(),
-            body: self.body.clone(),
-        }
-    }
-}
-
-impl HttpResponse {
-    pub fn get_bytes(&self) -> Vec<u8> {
-        let mut headers = self.headers.clone();
-        if self.body.is_none() {
-            headers.push(("Content-Length".to_string(), "0".to_string()));
-        } else if let Some(body) = &self.body {
-            headers.push(("Content-Length".to_string(), body.len().to_string()));
-        }
-        let mut response_text = format!("HTTP/1.1 {} {}\r\n", self.status.code, self.status.text);
-        for (key, value) in &headers {
-            response_text.push_str(&format!("{}: {}\r\n", key, value));
-        }
-        response_text.push_str("\r\n"); // end of headers
-        if let Some(body) = &self.body {
-            response_text.push_str(&String::from_utf8_lossy(body));
-        }
-        response_text.into_bytes()
     }
 }
 
@@ -633,28 +473,6 @@ mod tests {
     }
 
     #[test]
-    fn test_request_and_response_bytes() {
-        let req = HttpRequest::new(
-            RequestMethod::Post,
-            "/submit".into(),
-            vec![("Content-Length".into(), "4".into())],
-            Some("data".into()),
-        );
-        let req_bytes = String::from_utf8(req.get_bytes()).unwrap();
-        assert!(req_bytes.starts_with("POST /submit HTTP/1.1"));
-        assert!(req_bytes.contains("\r\n\r\ndata"));
-
-        let resp = HttpResponse::from_status(
-            StatusCode::Ok,
-            vec![("Content-Type".into(), ContentType::TextPlain.to_string())],
-            None,
-        );
-        let resp_bytes = String::from_utf8(resp.get_bytes()).unwrap();
-        assert!(resp_bytes.contains("Content-Length: 0"));
-        assert!(resp_bytes.ends_with("\r\n\r\n"));
-    }
-
-    #[test]
     fn test_write_chunked() {
         let data = vec![b'a'; 3000];
         let mut out = Vec::new();
@@ -667,8 +485,8 @@ mod tests {
 
     #[test]
     fn test_parsing_enums_from_str() {
-        assert!(RequestMethod::from_str("GET") == Some(RequestMethod::Get));
-        assert!(ContentType::from_str("text/html") == Some(ContentType::TextHtml));
+        assert_eq!(RequestMethod::from_str("GET"), Some(RequestMethod::Get));
+        assert_eq!(ContentType::from_str("text/html"), Some(ContentType::TextHtml));
         assert!(RequestMethod::from_str("UNKNOWN").is_none());
         assert!(ContentType::from_str("invalid/type").is_none());
     }

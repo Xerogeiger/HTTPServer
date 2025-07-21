@@ -9,6 +9,7 @@ use crate::http::shared::RequestMethod::Get;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use crate::decode::gz_decoder::GzDecoder;
+use crate::decode::gz_encoder::GzEncoder;
 use crate::http::client::HttpClient;
 use crate::http::shared::ContentType::TextPlain;
 
@@ -116,8 +117,10 @@ impl HttpClient for HttpV11Client {
             raw.push_str(&format!("{}: {}\r\n", k, v));
         }
         raw.push_str("\r\n");
+
+        let mut raw = raw.into_bytes();
         if let Some(body) = request.body {
-            raw.push_str(&body);
+            raw.extend_from_slice(&body);
         }
 
         if self.stream.is_none() {
@@ -129,7 +132,7 @@ impl HttpClient for HttpV11Client {
             .take()
             .expect("stream was just set so this is safe");
 
-        stream.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
+        stream.write_all(&raw).map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
 
         // Read and parse response
@@ -242,76 +245,90 @@ impl HttpServerClient for HttpV11ServerClient {
             return Err("Client is not connected".to_string());
         }
 
-        let mut buffer = [0; 1024];
-        match self.stream.read(&mut buffer) {
-            Ok(size) if size > 0 => {
-                let request_text = String::from_utf8_lossy(&buffer[..size]);
-                let mut lines = request_text.lines();
-                let request_line = lines.next().ok_or("Empty request line")?;
-                let parts: Vec<&str> = request_line.split_whitespace().collect();
-                if parts.len() < 2 {
-                    return Err("Invalid request line".to_string());
-                }
-                let method = parts[0].to_string();
-                let path = parts[1].to_string();
-                let headers: Vec<(String, String)> = lines.clone()
-                    .filter_map(|line| {
-                        let mut header_parts = line.splitn(2, ':');
-                        if let (Some(key), Some(value)) = (header_parts.next(), header_parts.next()) {
-                            Some((key.trim().to_string(), value.trim().to_string()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+        let mut buffered_reader = BufReader::new(&self.stream);
+        let mut request_line = String::new();
+        match buffered_reader.read_line(&mut request_line) {
+            Ok(0) => return Ok(None), // EOF, no request
+            Ok(_) => {}
+            Err(e) => return Err(format!("Failed to read request line: {}", e)),
+        }
 
-                if(headers.is_empty()) {
-                    return Err("No headers found".to_string());
-                }
+        let request_line = request_line.trim_end();
+        if request_line.is_empty() {
+            return Ok(None); // No request received
+        }
 
-                let content_length = headers.iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
-                    .and_then(|(_, v)| v.parse::<usize>().ok())
-                    .unwrap_or(0);
+        let mut parts = request_line.split_whitespace();
+        let method_str = parts.next().ok_or("Missing request method")?;
+        let path = parts.next().ok_or("Missing request path")?;
+        let version = parts.next().ok_or("Missing HTTP version")?;
 
-                if content_length == 0 {
-                    // If content length is 0, there is no body
-                    return Ok(Some(HttpRequest {
-                        method: RequestMethod::from_str(&method).unwrap_or(Get),
-                        path,
-                        headers,
-                        body: None,
-                    }));
-                }
+        if !version.eq_ignore_ascii_case("HTTP/1.1") && !version.eq_ignore_ascii_case("HTTP/1.0") {
+            return Err(format!("Unsupported HTTP version: {}", version));
+        }
 
-                let body = if lines.clone().any(|line| !line.is_empty()) {
-                    // If there's an empty line, the body starts after it
-                    let body_lines: Vec<String> = lines.skip_while(|line| line.is_empty()).map(String::from).collect();
-                    if body_lines.is_empty() {
-                        None
-                    } else {
-                        Some(body_lines.join("\n"))
-                    }
-                } else {
-                    None
-                };
-                println!("Received request: {} {} with headers: {:?}", method, path, headers);
+        let method = RequestMethod::from_str(method_str);
+        if method.is_none() {
+            return Err(format!("Unsupported HTTP method: {}", method_str));
+        }
 
-                Ok(Some(HttpRequest {
-                    method: RequestMethod::from_str(&method).unwrap_or(Get),
-                    path,
-                    headers,
-                    body,
-                }))
+        let method = method.unwrap();
+        let mut headers = Vec::new();
+        let mut body: Option<Vec<u8>> = None;
+
+        // Read headers
+        loop {
+            let mut header_line = String::new();
+            match buffered_reader.read_line(&mut header_line) {
+                Ok(0) => break, // EOF, no more headers
+                Ok(_) => {}
+                Err(e) => return Err(format!("Failed to read header line: {}", e)),
             }
-            Ok(_) => Err("No data received".to_string()),
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    return Ok(None)
-                }
-                Err(format!("Failed to read request: {}", e))
+            let header_line = header_line.trim_end();
+            if header_line.is_empty() {
+                break; // End of headers
+            }
+            if let Some((key, value)) = header_line.split_once(':') {
+                headers.push((key.trim().to_string(), value.trim().to_string()));
+            } else {
+                return Err(format!("Invalid header format: {}", header_line));
             }
         }
+
+        // Read body if present
+        if let Some(content_length) = headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
+            .and_then(|(_, v)| v.parse::<usize>().ok()) {
+            let mut body_bytes = vec![0; content_length];
+            buffered_reader.read_exact(&mut body_bytes)
+                .map_err(|e| format!("Failed to read request body: {}", e))?;
+            body = Some(body_bytes);
+        } else if headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("Transfer-Encoding") && v.eq_ignore_ascii_case("chunked")) {
+            // Handle chunked transfer encoding
+            let mut body_bytes = Vec::new();
+            loop {
+                let mut size_line = String::new();
+                buffered_reader.read_line(&mut size_line)
+                    .map_err(|e| format!("Failed to read chunk size: {}", e))?;
+                let size = usize::from_str_radix(size_line.trim_end(), 16)
+                    .map_err(|_| "Invalid chunk size".to_string())?;
+                if size == 0 {
+                    break; // End of chunks
+                }
+                let mut chunk = vec![0; size];
+                buffered_reader.read_exact(&mut chunk)
+                    .map_err(|e| format!("Failed to read chunk data: {}", e))?;
+                body_bytes.extend_from_slice(&chunk);
+                // Read the trailing CRLF
+                let mut crlf = [0; 2];
+                buffered_reader.read_exact(&mut crlf)
+                    .map_err(|e| format!("Failed to read trailing CRLF: {}", e))?;
+            }
+            body = Some(body_bytes);
+        }
+
+        // Create and return the HttpRequest object
+        Ok(Some(HttpRequest::new(method, path.to_string(), headers, body)))
     }
 
     fn send_response(&mut self, response: HttpResponse) -> Result<(), String> {
@@ -328,6 +345,7 @@ impl HttpServerClient for HttpV11ServerClient {
 
         if chunked {
             r.headers.push(("Transfer-Encoding".to_string(), "chunked".to_string()));
+            r.headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
         } else {
             let content_length = r.body.as_ref().map_or(0, |b| b.len());
             r.headers.push(("Content-Length".to_string(), content_length.to_string()));
@@ -346,7 +364,9 @@ impl HttpServerClient for HttpV11ServerClient {
             response_text = format!("{}{}", status_line, headers);
             self.stream.write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
             let body = r.body.clone().unwrap_or_default();
-            write_chunked(&mut self.stream, body.as_ref()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
+            let encoded = GzEncoder::new().encode(&body)
+                .map_err(|e| format!("Failed to encode response body: {}", e))?;
+            write_chunked(&mut self.stream, &encoded).map_err(|e| format!("Failed to write chunked response: {}", e))?;
         } else {
             let body = r.body.clone().unwrap_or_default();
             response_text = format!("{}{}{}", status_line, headers, String::from_utf8_lossy(&body));

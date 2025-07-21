@@ -25,7 +25,7 @@ pub(crate) trait HttpClient {
         self.send_request(req)
     }
 
-    fn post(&mut self, url: &str, body: Option<String>) -> Result<HttpResponse, String> {
+    fn post(&mut self, url: &str, body: Option<Vec<u8>>) -> Result<HttpResponse, String> {
         let req = HttpRequest {
             method: Post,
             path: url.into(),
@@ -35,7 +35,7 @@ pub(crate) trait HttpClient {
         self.send_request(req)
     }
 
-    fn put(&mut self, url: &str, body: Option<String>) -> Result<HttpResponse, String> {
+    fn put(&mut self, url: &str, body: Option<Vec<u8>>) -> Result<HttpResponse, String> {
         let req = HttpRequest {
             method: Put,
             path: url.into(),

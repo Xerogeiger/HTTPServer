@@ -60,9 +60,21 @@ impl HttpClient for HttpV10Client {
         let mut stream = TcpStream::connect(&addr)
             .map_err(|e| format!("Connection error: {}", e))?;
 
+        let mut request_text = format!("{} {} HTTP/1.0\r\n", req.method.to_string(), req.path);
+
+        for (key, value) in &req.headers {
+            request_text.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        request_text.push_str("\r\n");
+
+        let mut request_bytes: Vec<u8> = request_text.into_bytes();
+        if let Some(body) = req.body {
+            request_bytes.extend_from_slice(&body);
+        }
+
         // Send it
         stream
-            .write_all(&*req.get_bytes())
+            .write_all(&request_bytes)
             .map_err(|e| format!("Write error: {}", e))?;
 
         // Read the full response
