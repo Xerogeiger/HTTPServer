@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::io;
-use std::io::Write;
-use std::net::{IpAddr, Ipv4Addr};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, Ipv4Addr, TcpStream};
 use crate::http::client::HttpClient;
 use crate::http::server::HttpServer;
 use crate::http::v10::http_v10::HttpV10Client;
@@ -435,6 +435,30 @@ pub fn write_chunked<W: Write>(stream: &mut W, mut data: &[u8]) -> io::Result<()
     stream.write_all(b"0\r\n\r\n")?;
     stream.flush()?;
     Ok(())
+}
+
+pub fn read_chunked_body(reader: &mut BufReader<&TcpStream>) -> io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        // Read the chunk-size line
+        let mut size_line = String::new();
+        reader.read_line(&mut size_line)?;
+        let size = usize::from_str_radix(size_line.trim(), 16)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if size == 0 {
+            // Consume trailing CRLF
+            let mut crlf = [0; 2];
+            reader.read_exact(&mut crlf)?;
+            break;
+        }
+        let mut chunk = vec![0; size];
+        reader.read_exact(&mut chunk)?;
+        body.extend_from_slice(&chunk);
+        // consume CRLF
+        let mut crlf = [0; 2];
+        reader.read_exact(&mut crlf)?;
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
