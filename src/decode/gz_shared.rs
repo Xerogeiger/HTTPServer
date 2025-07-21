@@ -161,25 +161,30 @@ impl GzHeader {
     }
 }
 
-pub fn generate_crc32_table() -> [u32; 256] {
+const fn generate_crc32_table_const() -> [u32; 256] {
     let mut table = [0u32; 256];
-    let polynomial: u32 = 0xEDB88320;
-    for i in 0..256 {
+    let mut i = 0;
+    while i < 256 {
         let mut c = i as u32;
-        for _ in 0..8 {
-            if c & 1 != 0 {
-                c = polynomial ^ (c >> 1);
-            } else {
-                c = c >> 1;
-            }
+        let mut j = 0;
+        while j < 8 {
+            c = if c & 1 != 0 { 0xEDB88320 ^ (c >> 1) } else { c >> 1 };
+            j += 1;
         }
-        table[i as usize] = c;
+        table[i] = c;
+        i += 1;
     }
     table
 }
 
+pub const CRC32_TABLE: [u32; 256] = generate_crc32_table_const();
+
+pub fn generate_crc32_table() -> [u32; 256] {
+    CRC32_TABLE
+}
+
 pub fn compute_crc32(data: &[u8]) -> u32 {
-    let table = generate_crc32_table();
+    let table = &CRC32_TABLE;
     let mut crc = 0xFFFF_FFFFu32;
     for &b in data {
         let idx = ((crc ^ b as u32) & 0xFF) as usize;

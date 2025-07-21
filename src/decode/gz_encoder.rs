@@ -77,6 +77,14 @@ impl DeflateEncoder {
             DeflateBlockType::FixedHuffman => self.encode_fixed_tokens(&tokens, &mut out)?,
             DeflateBlockType::DynamicHuffman => self.encode_dynamic_tokens(&tokens, &mut out)?,
         }
+        #[cfg(debug_assertions)]
+        {
+            use crate::decode::gz_decoder::DeflateDecoder;
+            let mut dec = DeflateDecoder::new(&out);
+            let mut verify = Vec::new();
+            dec.decode(&mut verify).expect("Deflate self-check failed");
+            debug_assert_eq!(&verify, data, "Deflate verification mismatch");
+        }
         Ok(out)
     }
 
@@ -620,5 +628,16 @@ mod tests {
 
         let decoded = GzDecoder::load(&encoded).unwrap().decompress().unwrap();
         assert_eq!(&decoded, data);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_gzip_encode_speed() {
+        let size = 288_399;
+        let data: Vec<u8> = (0..size).map(|i| (i * 31 % 251) as u8).collect();
+        let enc = GzEncoder::new();
+        let now = std::time::Instant::now();
+        let _ = enc.encode(&data).unwrap();
+        eprintln!("Encoding {} bytes took {} ms", size, now.elapsed().as_millis());
     }
 }
