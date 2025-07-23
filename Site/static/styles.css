@@ -1,0 +1,206 @@
+/* ---------- Theme variables ---------- */
+:root {
+    --bg: whitesmoke;
+    --card-bg: #fff;
+    --text: black;
+    --subtext: #555555;
+    --accent: #007acc;
+    --radius: 8px;
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+/* ---------- Base styles ---------- */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 20px;
+    line-height: 1.6;
+}
+h1, h2 {
+    color: var(--text);
+}
+h1 { font-size: 2.5rem; font-weight: 700; }
+h2 { font-size: 1.8rem; margin-bottom: 10px; }
+
+/* ---------- Header ---------- */
+header {
+    text-align: center;
+    margin-bottom: 40px;
+    background-color: #ffffff;
+    box-shadow: var(--shadow);
+    padding: 20px;
+    border-radius: var(--radius);
+}
+header p {
+    color: var(--subtext);
+    font-weight: 400;
+    margin-top: 5px;
+}
+
+/* ---------- Card container ---------- */
+.card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 40px;
+    margin-bottom: 30px;
+}
+
+/* ---------- Experience ---------- */
+.experience-bullets {
+    padding: 20px;
+}
+
+.job {
+    margin-bottom: 20px;
+}
+.job h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+.period {
+    margin-left: 1em;
+    display: block;
+    font-size: 0.9rem;
+    color: var(--subtext);
+    margin-bottom: 8px;
+}
+
+/* ---------- Skills ---------- */
+#skills-list > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    list-style: none;
+}
+
+#skills-list > div > span {
+    color: #fff;
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+}
+
+#skills-list > .intermediate > span {
+    background: var(--accent);
+}
+
+#skills-list > .beginner > span {
+    background: #f0ad4e; /* Bootstrap warning color */
+}
+
+#skills-list > .advanced > span {
+    background: #5cb85c; /* Bootstrap success color */
+}
+
+#other-skills-list {
+    padding: 20px;
+    background: whitesmoke;
+}
+
+.beginner {
+    background: whitesmoke;
+    color: var(--text);
+    padding: 20px;
+}
+.intermediate {
+    background: whitesmoke;
+    color: var(--text);
+    padding: 20px;
+}
+.advanced {
+    background: whitesmoke;
+    color: var(--text);
+    padding: 20px;
+}
+
+/* ---------- Carousel ---------- */
+.carousel {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--radius);
+}
+.carousel-track {
+    position: relative;
+    width: 100%;
+    height: 600px;
+}
+.carousel-track img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: var(--radius);
+    transition: opacity 0.5s ease;
+}
+#carousel-video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: var(--radius);
+}
+.carousel-caption {
+    position: absolute;
+    bottom: 8px;
+    left: 12px;
+    right: 12px;
+    background: rgba(0, 0, 0, 1);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    font-size: 0.95rem;
+}
+.carousel-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(255, 255, 255, 0.8);
+    border: none;
+    font-size: 2rem;
+    padding: 0;
+    line-height: 40px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    border-radius: 50%;
+    box-shadow: var(--shadow);
+    transition: background 0.2s;
+    cursor: pointer;
+}
+
+.carousel-btn#prev::before {
+    content: '‹';
+}
+.carousel-btn#next::before {
+    content: '›';
+}
+
+.carousel-btn::before {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+#prev { left: 10px; }
+#next { right: 10px; }
+.carousel-btn:hover {
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+}

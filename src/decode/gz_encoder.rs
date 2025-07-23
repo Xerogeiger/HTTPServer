@@ -564,7 +564,7 @@ fn compute_crc32(data: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use crate::decode::gz_decoder::{DeflateDecoder, GzDecoder};
-    use std::io::Read;
+    use std::io::{Read, Write};
 
     // —— BitWriter tests —— //
 
@@ -772,6 +772,32 @@ mod tests {
 
         let decoded = GzDecoder::load(&encoded).unwrap().decompress().unwrap();
         assert_eq!(&decoded, data);
+    }
+
+    #[test]
+    fn compare_with_flate2() {
+        use flate2::{write::GzEncoder as FlateEncoder, read::GzDecoder as FlateDecoder, Compression};
+        let data = std::fs::read("Site/static/images/injector-sc.png").expect("Error reading test file");
+
+        // Encode using custom encoder
+        let custom_enc = GzEncoder::new();
+        let custom = custom_enc.encode(&data).expect("custom encode");
+
+        // Encode using flate2
+        let mut fe = FlateEncoder::new(Vec::new(), Compression::default());
+        fe.write_all(&data).unwrap();
+        let flate = fe.finish().unwrap();
+
+        // Decode custom output using flate2
+        let mut dec = FlateDecoder::new(&custom[..]);
+        let mut custom_decoded = Vec::new();
+        dec.read_to_end(&mut custom_decoded).expect("custom decode via flate2");
+
+        // Decode flate2 output using our decoder
+        let ours_decoded = GzDecoder::load(&flate).expect("load flate2 output").decompress().expect("our decode");
+
+        assert_eq!(custom_decoded, ours_decoded);
+        assert_eq!(&custom_decoded, &data);
     }
 
     #[test]

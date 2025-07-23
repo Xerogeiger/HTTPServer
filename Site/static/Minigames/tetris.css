@@ -1,0 +1,5 @@
+#tetris-canvas {
+    height: 600px; /* 20 blocks * 30px */
+    width: 450px; /* 15 blocks * 30px */
+    border: 2px solid #333; /* Darker border for the canvas */
+}

@@ -2,3 +2,5 @@
 /.idea/
 /Site/static/node_modules/
 /Site/static/dist/
+/Site/static/Minigames/node_modules/
+/Site/static/Minigames/dist/

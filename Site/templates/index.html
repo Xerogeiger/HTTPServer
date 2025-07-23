@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Alexzander Bond – Resume</title>
+
+  <!-- Inter font for a modern feel -->
+  <link
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
+          rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header>
+  <h1 id="name">AJ | Alexzander Bond</h1>
+  <p id="title">Software Developer</p>
+</header>
+
+<main>
+  <section id="about" class="card">
+    <h2>About Me</h2>
+    <p id="about-text"></p>
+  </section>
+
+  <section id="experience" class="card">
+    <h2>Experience</h2>
+    <div id="experience-list"></div>
+  </section>
+
+  <section id="education" class="card">
+    <h2>Education</h2>
+    <div id="education-list"></div>
+  </section>
+
+  <section id="projects" class="card">
+    <h2>Projects</h2>
+    <div class="carousel">
+      <div class="carousel-track">
+        <img id="carousel-image" src="" alt="Project screenshot" />
+        <video id="carousel-video" src="" controls></video>
+        <div id="carousel-caption" class="carousel-caption"></div>
+      </div>
+      <button id="prev" class="carousel-btn"></button>
+      <button id="next" class="carousel-btn"></button>
+    </div>
+  </section>
+
+  <section id="skills" class="card">
+    <h2>Skills</h2>
+    <h3>Technical</h3>
+    <ul id="skills-list"></ul>
+    <h3>Other</h3>
+    <ul id="other-skills-list" class="other-skills"></ul>
+  </section>
+
+  <section id="contact" class="card">
+    <h2>Contact</h2>
+    <ul>
+      <li>Address: 842 SW 19th St Apt. 203, Moore, OK 73160</li>
+      <li>Phone: (210) 669‑3060</li>
+      <li>Email: <a id="email-link"></a></li>
+      <li>LinkedIn: <a id="linkedin-link" target="_blank"></a></li>
+    </ul>
+  </section>
+</main>
+
+<script type="module" src="dist/index.js"></script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flappy Cat – CipherSphere Arcade</title>
+    <!-- Favicon -->
+    <link rel="icon" href="img/flappy-cat.png" type="image/png" />
+
+    <!-- Google Font (Optional) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+
+    <link rel="stylesheet" href="global.css" />
+    <style>
+        /* ---------- Header ---------- */
+        header {
+            background-color: #00796b;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            height: 60px;
+            flex-shrink: 0;
+        }
+        .logo-area {
+            display: flex;
+            align-items: center;
+        }
+        .logo-area img {
+            width: 40px;
+            height: 40px;
+            margin-right: 8px;
+        }
+        .logo-area span {
+            font-size: 1.4rem;
+            font-weight: 500;
+        }
+        nav ul {
+            list-style: none;
+            display: flex;
+        }
+        nav li { margin-left: 20px; }
+        nav a {
+            color: white;
+            font-weight: 500;
+            transition: opacity 0.2s;
+        }
+        nav a:hover { opacity: 0.8; }
+
+        /* Instructions Box */
+        .overlay {
+            background: rgba(255,255,255,0.9);
+            border: 2px solid #00796b;
+            border-radius: 8px;
+            padding: 16px;
+            max-width: 400px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        h2 {
+            font-size: 1.2rem;
+            margin-bottom: 8px;
+            color: #00796b;
+        }
+        p {
+            font-size: 0.95rem;
+            margin-bottom: 12px;
+        }
+        button {
+            background-color: #00796b;
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        .instructions button:hover {
+            background-color: #00695c;
+        }
+
+        /* Game Canvas Container */
+        #game-container {
+            position: relative;
+            width: 320px;        /* Base canvas width */
+            height: 480px;       /* Base canvas height */
+            border: 3px solid #00796b;
+            border-radius: 8px;
+            background-color: #b2ebf2;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        /* Score Display */
+        #score-display {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #00796b;
+            text-shadow: 1px 1px 2px rgba(255,255,255,0.7);
+            pointer-events: none;
+        }
+
+        /* ---------- Responsive ---------- */
+        @media (max-width: 480px) {
+            #game-container {
+                width: 100%;
+                height: auto;
+                aspect-ratio: 2/3; /* maintain 320×480 ratio */
+            }
+        }
+    </style>
+    <!-- JavaScript (Game Logic) -->
+    <script src="dist/flappy-cat-index.js"></script>
+</head>
+
+<body>
+<!-- Main Section: How to Play & Game Canvas -->
+<main>
+    <!-- Instructions Overlay -->
+    <div class="instructions overlay" id="instructions-box">
+        <h2>How to Play</h2>
+        <p>Tap or click to flap the cat’s wings. Navigate through the pipes without crashing!</p>
+        <button id="start-btn" onclick="startGame()">Start Game</button>
+    </div>
+
+    <!-- Game Canvas + Score -->
+    <div id="game-container" style="display:none;">
+        <div id="score-display">Score: 0</div>
+        <canvas id="game-canvas" width="320" height="480"></canvas>
+    </div>
+
+    <!-- Game Over Overlay -->
+    <div id="game-over-overlay" class="overlay" style="display:none">
+        <div class="message">
+            <h2>Game Over</h2>
+            <p id="final-score">0</p>
+            <button id="restart-btn" onclick="restartGame()">Play Again</button>
+        </div>
+    </div>
+</main>
+
+<!-- Footer -->
+<footer>
+    &copy; 2025 CipherSphere Arcade |
+    <a href="#">Privacy Policy</a> |
+    <a href="#">Terms of Service</a>
+</footer>
+</body>
+</html>

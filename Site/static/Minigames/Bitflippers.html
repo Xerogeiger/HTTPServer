@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Bit-Flip Puzzle</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Alumni+Sans+SC:ital,wght@0,100..900;1,100..900&family=Fjalla+One&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="global.css" />
+  <link rel="stylesheet" href="bitflipper-styles.css" />
+</head>
+<body>
+<main>
+  <h1>BIT FLIPPER</h1>
+
+  <!-- Controls -->
+  <div class="controls">
+    <label>
+      Board Size:
+      <select id="sizeSelect">
+        <option value="3">3×3</option>
+        <option value="4" selected>4×4</option>
+        <option value="5">5×5</option>
+        <option value="6">6×6</option>
+      </select>
+    </label>
+    <button id="newGameBtn">New Game</button>
+    <span id="moveCount">Moves: 0</span>
+  </div>
+
+  <!-- The grid container -->
+  <div id="grid"></div>
+
+  <!-- Win message overlay (hidden until win) -->
+  <div id="winOverlay" class="overlay hidden">
+    <div class="message">
+      <h2>You solved it!</h2>
+      <p id="finalMoves"></p>
+      <button id="playAgainBtn">Play Again</button>
+    </div>
+  </div>
+</main>
+
+<footer>
+  &copy; 2025 CipherSphere Arcade |
+  <a href="#">Privacy Policy</a> |
+  <a href="#">Terms of Service</a>
+</footer>
+
+<!-- Include compiled JavaScript -->
+<script src="dist/bitflipper-index.js"></script>
+</body>
+</html>

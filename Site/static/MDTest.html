@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Custom Markdown Parser Test</title>
+    <style>
+        /* Base */
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+        }
+        /* Headings */
+        h1,h2,h3 {
+            color: #333;
+            margin-top: 1.5em;
+        }
+        h1{font-size:2em} h2{font-size:1.5em} h3{font-size:1.2em}
+        /* Text flow */
+        p             { margin:.5em 0 }
+        ul,ol,table,blockquote,img { margin:10px 0 }
+        ul,ol         { padding-left:20px }
+        li            { margin:5px 0 }
+        /* Blockquote */
+        blockquote {
+            border-left:4px solid #ccc;
+            padding-left:16px;
+            color:#666;
+        }
+        /* Code blocks & inline */
+        pre,code {
+            background:#f4f4f4;
+            border-radius:4px;
+            font-family:monospace;
+        }
+        pre {
+            padding:10px; overflow-x:auto;
+        }
+        code {
+            padding:2px 4px;
+        }
+        /* Links */
+        a { color:#1a73e8; text-decoration:none }
+        a:hover { text-decoration:underline }
+        /* Images */
+        img { display:block; max-width:100%; height:auto }
+        /* Tables */
+        table { border-collapse:collapse; width:100% }
+        th,td {
+            border:1px solid #ddd;
+            padding:8px;
+            text-align:left;
+        }
+        th { background:#f0f0f0 }
+        dl {
+            margin: 1em 0;
+        }
+        dt {
+            font-weight: bold;
+        }
+        dd {
+            margin: 0 0 0.5em 1em;
+        }
+
+        .task-list {
+            list-style: none;
+            padding-left: 0;
+        }
+        .task-list-item {
+            display: flex;
+            align-items: center;
+            margin: 0.25em 0;
+        }
+        .task-list-item input {
+            margin-right: 0.5em;
+            transform: scale(1.1);
+        }
+
+        /* Math styling */
+        .math { font-family:'JetBrains Mono',Menlo,Consolas,monospace; background:#eef }
+        span.math {
+            display:inline-block; padding:2px 4px; border-radius:2px;
+        }
+        div.math {
+            display:block; width:100%; box-sizing:border-box;
+            padding:1em; margin:1em 0; border-radius:4px;
+            overflow-x:auto;
+        }
+        /* Stacked fraction */
+        .math .frac {
+            display:inline-block; text-align:center;
+            line-height:1.1; margin:0 .2em; white-space:nowrap;
+        }
+        .math .frac .num,
+        .math .frac .den {
+            display:block; padding:0 .2em;
+        }
+        .math .frac .num {
+            border-bottom:1px solid currentColor;
+        }
+        .math .frac .den {
+            margin-top:.1em;
+        }
+        .math .sqrt { font-style:italic }
+        /* Σ (sum) */
+        .math .sum,
+        .math .int {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;      /* ← center top/bottom */
+            vertical-align: middle;
+            margin: 0 0.2em;
+        }
+        .math .sum-sup,
+        .math .sum-sub { font-size:.7em; line-height:1 }
+        .math .sum-sym { font-size:1em; line-height:1 }
+        .math .int-sup, .math .int-sub { font-size:.7em; line-height:1 }
+        .math .int-sym { font-size:1em; line-height:1 }
+    </style>
+</head>
+<body>
+<h1>Markdown Parser 🎯 Test Page</h1>
+<div id="output"></div>
+
+<script type="module">
+    import { renderMarkdown } from './md/core.js';
+
+    const tests = [
+        // Existing small tests
+        { md: '# Header 1\n## Header 2', desc: '🔹 Headers' },
+        { md: '- List item 1\n  - Nested item\n* Another', desc: '🔹 Lists (unordered)' },
+        { md: '1. First\n2. Second\n   1. Nested', desc: '🔹 Ordered lists' },
+        { md: '> Blockquote\n>> Nested', desc: '🔹 Blockquotes' },
+        { md: '```\nCode block\n```', desc: '🔹 Fenced code block' },
+        { md: '`inline code`', desc: '🔹 Inline code' },
+        { md: '**Bold** and *italic*', desc: '🔹 Bold + Italic' },
+        { md: '[Link](https://example.com)', desc: '🔹 Links' },
+        { md: '![Alt text](image.png)', desc: '🔹 Images' },
+        { md: '| A | B |\n|--|--|\n|1|2|', desc: '🔹 Tables' },
+
+        // Smaller tests covering all specs
+        { md: '###### Small Heading', desc: '🔹 H6' },
+        { md: 'Normal text with ~~strikethrough~~.', desc: '🔹 Strikethrough' },
+        { md: '> Mixed *blockquote* with [link](#).', desc: '🔹 Blockquote nesting' },
+        { md: '- [x] Done\n- [ ] Pending', desc: '🔹 Task List' },
+        { md: '```js\nconsole.log(1);\n```', desc: '🔹 Code with lang' },
+        { md: '    Indented code block', desc: '🔹 Indented code' },
+        { md: '<mark>HTML</mark> passthrough', desc: '🔹 Inline HTML' },
+        { md: 'Line 1  \nLine 2', desc: '🔹 Line break' },
+        { md: '<http://example.org>', desc: '🔹 Autolink' },
+        { md: '[Ref][1]\n\n[1]: http://ref', desc: '🔹 Reference link' },
+        { md: '![RefImg][2]\n\n[2]: image.png', desc: '🔹 Reference image' },
+        { md: 'Term 1\n: Definition', desc: '🔹 Definition list' },
+        { md: '---', desc: '🔹 Horizontal rule' },
+        { md: '| L | C | R |\n|:--|:-:|--:|\n|1|2|3|', desc: '🔹 Table align' },
+        { md: '^sup^ and __sub__', desc: '🔹 Inline super/sub' },
+        { md: '$x_i^2$', desc: '🔹 Inline math' },
+        { md: '$$E=mc^2$$', desc: '🔹 Display math $$' },
+        { md: '\\\[\\int_a^b f(x)dx\\\]', desc: '🔹 Display math \[ \]' },
+        { md: '$\\frac{a}{b}$', desc: '🔹 Fraction' },
+        { md: '$\\sum_{i=1}^n i$', desc: '🔹 Summation' },
+        { md: '$\\int_{0}^{1} x dx$', desc: '🔹 Integral' },
+        { md: 'Footnote[^fn]\n\n[^fn]: Note text.', desc: '🔹 Footnote' }
+    ];
+
+    const output = document.getElementById('output');
+    tests.forEach(({ md, desc }) => {
+        const section = document.createElement('section');
+        section.innerHTML = `<h3>${desc}</h3>${renderMarkdown(md)}`;
+        output.appendChild(section);
+    });
+</script>
+</body>
+</html>

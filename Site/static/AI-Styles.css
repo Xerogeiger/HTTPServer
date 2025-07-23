@@ -1,0 +1,309 @@
+* {
+    font-family: Arial, sans-serif;
+}
+
+body {
+    background: #f5f5f5;
+    margin: 0;
+    display: flex;
+    height: 100vh;
+    align-items: center;
+    justify-content: center;
+}
+
+.chat-history {
+    display: flex;
+    flex-direction: column;
+    width: 20%;
+    min-width: 200px;
+    max-width: 800px;
+    margin: 1em;
+    padding: 20px;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+    height: 100%;
+    align-items: center;
+}
+
+#chats {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow-y: scroll;
+    background-color: whitesmoke;
+    align-items: center;
+}
+
+.chat-buttons {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    margin-bottom: 3em;
+}
+
+.saved-chat {
+    display: block;
+    width: 100%;
+    border: 1px solid #ddd;
+    background: #fff;
+    text-align: center;
+}
+
+.saved-chat:hover {
+    background: #f0f0f0;
+}
+
+.saved-chat:active {
+    background: #e0e0e0;
+}
+
+.chat-container {
+    width: 90%;
+    max-width: 1000px;
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+    display: flex;
+    flex-direction: column;
+    overflow: scroll;
+    height: 100%;
+}
+
+.messages {
+    flex: 1;
+    padding: 1rem;
+    overflow-y: auto;
+    border-bottom: 1px solid #ddd;
+}
+
+.message {
+    margin-bottom: 0.75rem;
+}
+
+.message.user {
+    text-align: right;
+    color: #007bff;
+}
+
+.message.ai {
+    text-align: left;
+    color: #333;
+}
+
+.chat-input-container {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-top: 1px solid #ddd;
+    background: #fafafa;
+    gap: 0.75rem;
+}
+
+#model-select {
+    flex-shrink: 0;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.9rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+}
+
+#user-input {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    outline: none;
+}
+
+#user-input:focus {
+    border-color: #007bff;
+    box-shadow: 0 0 0 2px rgba(0,123,255,0.2);
+}
+
+#send-btn {
+    flex-shrink: 0;
+    padding: 0.5rem 1rem;
+    font-size: 1rem;
+    border: none;
+    background: #007bff;
+    color: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#send-btn:hover:not(:disabled) {
+    background: #0056b3;
+}
+
+#send-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Style for the <details> that wraps AI “thinking” */
+.think {
+    margin: 0.5rem 0;
+    border-left: 2px solid #888;
+    padding-left: 0.5rem;
+    font-style: italic;
+    background: #f9f9f9;
+}
+
+/* Summary label styling */
+.think > summary {
+    cursor: pointer;
+    font-weight: bold;
+    color: #555;
+}
+
+/* Base */
+body {
+    font-family: sans-serif;
+    padding: 20px;
+}
+
+/* Headings */
+h1, h2, h3 {
+    color: #333;
+    margin-top: 1.5em;
+}
+h1 { font-size: 2em; }
+h2 { font-size: 1.5em; }
+h3 { font-size: 1.2em; }
+
+/* Text flow */
+p             { margin: .5em 0; }
+ul, ol, table, blockquote, img {
+    margin: 10px 0;
+}
+ul, ol        { padding-left: 20px; }
+li            { margin: 5px 0; }
+
+/* Blockquote */
+blockquote {
+    border-left: 4px solid #ccc;
+    padding-left: 16px;
+    color: #666;
+}
+
+/* Code blocks & inline code */
+pre, code {
+    background: #f4f4f4;
+    border-radius: 4px;
+}
+pre {
+    padding: 10px;
+    overflow-x: auto;
+}
+code {
+    padding: 2px 4px;
+}
+
+/* Links */
+a {
+    color: #1a73e8;
+    text-decoration: none;
+}
+a:hover {
+    text-decoration: underline;
+}
+
+/* Images */
+img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+}
+
+/* Tables */
+table {
+    border-collapse: collapse;
+}
+th, td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+th {
+    background: #f0f0f0;
+}
+
+/* Math styling */
+.math {
+    font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+    background: #eef;
+}
+
+/* Inline vs Display math */
+span.math {
+    display: inline-block;
+    padding: 2px 4px;
+    border-radius: 2px;
+}
+div.math {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 1em;
+    margin: 1em 0;
+    border-radius: 4px;
+    overflow-x: auto;
+}
+
+/* Stacked fraction */
+.math .frac {
+    display: inline-block;
+    text-align: center;
+    vertical-align: middle;
+    line-height: 1.1;
+    margin: 0 0.2em;
+    white-space: nowrap;
+}
+.math .frac .num,
+.math .frac .den {
+    display: block;
+    padding: 0 0.2em;
+}
+.math .frac .num {
+    border-bottom: 1px solid currentColor;
+}
+.math .frac .den {
+    margin-top: 0.1em;
+}
+
+/* √( ) styling */
+.math .sqrt {
+    font-style: italic;
+}
+
+.math .sum {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 0 0.2em;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.math .sum-sup {
+    font-size: 0.7em;
+    line-height: 1;
+}
+
+.math .sum-sym {
+    font-size: 1em;
+    line-height: 1;
+}
+
+.math .sum-sub {
+    font-size: 0.7em;
+    line-height: 1;
+    margin-top: 0.1em;
+}

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Snake Game</title>
+    <link rel="stylesheet" href="global.css" />
+    <style>
+        #gameContainer {
+            position: relative;           /* allow absolute children */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+        }
+
+        canvas {
+            border: 2px solid #333;
+            background: #222;
+        }
+
+        #canvasWrapper {
+            position: relative;      /* so children can be positioned absolutely */
+            width: 400px;            /* match your canvas size */
+            height: 400px;
+            margin-top: 20px;        /* if you still want that gap from the H1 */
+        }
+
+        #scoreboard {
+            position: absolute;      /* now relative to #canvasWrapper */
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: whitesmoke;
+            border: 1px solid gray;
+            font-size: 1.2rem;
+            z-index: 999;            /* sits above the canvas */
+            align-items: center;
+            flex-direction: column;
+            justify-content: center;
+            padding: 10px;
+            white-space: nowrap;
+        }
+
+        #scoreboard button {
+            display: block;
+            margin: 0.5rem auto 0; /* top margin optional, auto left/right */
+        }
+    </style>
+    <script type="module" src="./dist/snake-index.js" defer></script>
+</head>
+<body onload="startGame()">
+<main id="gameContainer">
+    <h1>Snake</h1>
+
+    <!-- New wrapper around canvas + scoreboard -->
+    <div id="canvasWrapper">
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+
+        <div id="scoreboard" class="hidden">
+            <div>
+                <span id="score">Score: 0</span> |
+                <span id="highScore">High Score: 0</span>
+            </div>
+            <button onclick="window.snakeGame.restart()">Restart</button>
+        </div>
+    </div>
+</main>
+<footer>
+    &copy; 2025 CipherSphere Arcade |
+    <a href="#">Privacy Policy</a> |
+    <a href="#">Terms of Service</a>
+</footer>
+</body>
+</html>

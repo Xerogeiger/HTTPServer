@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CipherSphere Arcade</title>
+  <!-- Favicon -->
+  <link rel="icon" href="favicon.ico" type="image/x-icon" />
+
+  <!-- Google Fonts (Optional) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+          href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
+          rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="global.css" />
+
+  <style>
+    /* ---------- Header / Title Bar ---------- */
+    header {
+      background-color: #1a73e8;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      height: 60px;
+      flex-shrink: 0;
+    }
+
+    body {
+      width: 100%;
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+    }
+
+    /* Logo + Site Title */
+    .logo-container {
+      display: flex;
+      align-items: center;
+    }
+    /* Inline SVG logo (placeholder: circle with “C” inside) */
+    .logo-container svg {
+      width: 36px;
+      height: 36px;
+      margin-right: 8px;
+    }
+    .logo-text {
+      font-size: 1.4rem;
+      font-weight: 500;
+    }
+    /* Navigation Links */
+    nav ul {
+      list-style: none;
+      display: flex;
+      margin: 0;
+      padding: 0;
+    }
+    nav li {
+      margin-left: 24px;
+    }
+    nav a {
+      color: #ffffff;
+      font-weight: 500;
+      transition: opacity 0.2s ease-in-out;
+    }
+    nav a:hover {
+      opacity: 0.8;
+    }
+
+    /* ---------- Featured Banner ---------- */
+    .featured-banner {
+      position: relative;
+      background: url('featured-game-bg.jpg') center/cover no-repeat;
+      height: 280px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      text-align: center;
+    }
+    .featured-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.45);
+    }
+    .featured-content {
+      position: relative;
+      z-index: 1;
+      max-width: 800px;
+      padding: 0 16px;
+    }
+    .featured-content h2 {
+      font-size: 2rem;
+      margin-bottom: 12px;
+      font-weight: 700;
+    }
+    .featured-content p {
+      font-size: 1rem;
+      margin-bottom: 16px;
+    }
+    .featured-content .btn-play {
+      background-color: #ffcc00;
+      border: none;
+      padding: 12px 24px;
+      font-size: 1rem;
+      font-weight: 500;
+      border-radius: 4px;
+      color: #333;
+      transition: background-color 0.2s ease-in-out;
+    }
+    .featured-content .btn-play:hover {
+      background-color: #e6b800;
+    }
+
+    /* ---------- Game Grid Section ---------- */
+    .games-section {
+      padding: 40px 24px;
+      flex-grow: 1;
+    }
+    .games-section h3 {
+      font-size: 1.6rem;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+    .games-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 24px;
+      width: 90%;
+      max-width: 872px;
+    }
+    .game-card {
+      background-color: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.2s ease-in-out;
+    }
+    .game-card:hover {
+      transform: translateY(-4px);
+    }
+    .game-thumb {
+      width: 100%;
+      height: 100px;
+      object-fit: cover;
+      background-color: #ddd; /* placeholder background */
+    }
+    .game-info {
+      padding: 16px;
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .game-info h4 {
+      margin: 0 0 12px 0;
+      font-size: 1rem;
+      font-weight: 500;
+      color: #333;
+    }
+    .game-info button {
+      align-self: flex-start;
+      background-color: #1a73e8;
+      border: none;
+      padding: 8px 16px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      border-radius: 4px;
+      color: #fff;
+      transition: background-color 0.2s ease-in-out;
+    }
+    .game-info button:hover {
+      background-color: #1669c1;
+    }
+
+    /* ---------- Footer ---------- */
+    .social-links {
+      margin-top: 8px;
+    }
+    .social-links a {
+      margin: 0 8px;
+      color: #1a73e8;
+      font-weight: 500;
+      font-size: 0.9rem;
+    }
+
+    /* ---------- Responsive Breakpoints ---------- */
+    @media (max-width: 768px) {
+      header {
+        flex-direction: column;
+        height: auto;
+        padding: 12px;
+      }
+      nav ul {
+        flex-wrap: wrap;
+        justify-content: center;
+        margin-top: 8px;
+      }
+      nav li {
+        margin: 8px 12px;
+      }
+      .featured-content h2 {
+        font-size: 1.6rem;
+      }
+      .featured-content p {
+        font-size: 0.9rem;
+      }
+      .games-section {
+        padding: 32px 16px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+<!-- Header / Title Bar -->
+<header>
+  <div class="logo-container">
+    <img src="logo.png" alt="CipherSphere Arcade Logo" width="48" height="48" />
+    <span class="logo-text">CipherSphere Arcade</span>
+  </div>
+
+  <nav>
+    <ul>
+      <li><a href="#">Home</a></li>
+      <li><a href="#">Games</a></li>
+      <li><a href="#">About</a></li>
+      <li><a href="#">Contact</a></li>
+    </ul>
+  </nav>
+</header>
+
+<!-- Featured Banner -->
+<section class="featured-banner">
+  <div class="featured-overlay"></div>
+  <div class="featured-content">
+    <h2>Featured Game: Bit Flipper</h2>
+    <p>
+      Test your IQ playing Bit Flipper, a challenging puzzle game where you flip bits to solve intricate puzzles. Can you master the art of bit manipulation?
+    </p>
+    <button class="btn-play" onclick="window.location.href='Bitflippers.html'">
+      Play Now
+    </button>
+  </div>
+</section>
+
+<!-- Main Games Section -->
+<main class="games-section">
+  <h3>Explore Our Games</h3>
+  <div class="games-grid">
+    <!-- Game Card Example 1 -->
+    <div class="game-card">
+      <img
+              src="thumbnails/bitflipper-thumb.png"
+              alt="Bit Flipper Thumbnail"
+              class="game-thumb"
+      />
+      <div class="game-info">
+        <h4>Bit Flipper</h4>
+        <button onclick="window.location.href='Bitflippers.html'">
+          Play
+        </button>
+      </div>
+    </div>
+
+    <!-- Game Card Example 2 -->
+    <div class="game-card">
+      <img
+              src="thumbnails/flappycat-thumb.png"
+                alt="Flappy Cat Thumbnail"
+                class="game-thumb"
+      />
+      <div class="game-info">
+        <h4>Flappy Cat</h4>
+        <button onclick="window.location.href='FlappyCat.html'">
+          Play
+        </button>
+      </div>
+    </div>
+
+    <!-- Game Card Example 3 -->
+    <div class="game-card">
+      <img
+              src="thumbnails/streetracer-thumb.png"
+                alt="Street Racer Thumbnail"
+              class="game-thumb"
+      />
+      <div class="game-info">
+        <h4>Street Racer</h4>
+        <button onclick="window.location.href='StreetRacer.html'">
+          Play
+        </button>
+      </div>
+    </div>
+
+    <div class="game-card">
+      <img
+              src="thumbnails/polygon-match-thumb.png"
+              alt="Polygon Match Thumbnail"
+              class="game-thumb"
+      />
+      <div class="game-info">
+        <h4>Polygon Match</h4>
+        <button onclick="window.location.href='PolygonMatch.html'">
+          Play
+        </button>
+      </div>
+    </div>
+
+    <div class="game-card">
+      <img
+              src="thumbnails/snake-thumb.png"
+              alt="Snake Thumbnail"
+              class="game-thumb"
+      />
+      <div class="game-info">
+        <h4>Snake</h4>
+        <button onclick="window.location.href='SnakeGame.html'">
+          Play
+        </button>
+      </div>
+    </div>
+
+    <div class="game-card">
+      <img
+              src="thumbnails/ocean-platformer-thumb.png"
+              alt="Ocean Platformer Thumbnail"
+              class="game-thumb"
+      />
+      <div class="game-info">
+        <h4>Ocean Platformer</h4>
+        <button onclick="window.location.href='BeachGame.html'">
+          Play
+        </button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Footer -->
+<footer>
+  &copy; 2025 CipherSphere Arcade |
+  <a href="#">Privacy Policy</a> |
+  <a href="#">Terms of Service</a>
+</footer>
+</body>
+</html>
