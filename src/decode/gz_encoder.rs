@@ -157,6 +157,87 @@ impl DeflateEncoder {
         out.extend_from_slice(&bw.finish());
         Ok(())
     }
+
+    /// Dynamic Huffman using LZ77 tokens
+    fn encode_dynamic_tokens(&self, tokens: &[Token], out: &mut Vec<u8>) -> io::Result<()> {
+        // 1) Count symbol frequencies
+        let mut lit_freq = [0u32; 286];
+        let mut dist_freq = [0u32; 32];
+        lit_freq[256] = 1; // End-of-block symbol
+        dist_freq[0] = 1;  // At least one distance code
+
+        for t in tokens {
+            match *t {
+                Token::Literal(b) => lit_freq[b as usize] += 1,
+                Token::Match { length, distance } => {
+                    let (lsym, _, _) = length_code_and_bits(length);
+                    lit_freq[lsym] += 1;
+                    let (dsym, _, _) = distance_code_and_bits(distance);
+                    dist_freq[dsym] += 1;
+                }
+            }
+        }
+
+        // 2) Compute Huffman code lengths (max 15 bits per RFC 1951)
+        let lit_lens = huffman_code_lengths(&lit_freq, 15)?;
+        let dist_lens = huffman_code_lengths(&dist_freq, 15)?;
+
+        let hlit = find_last_nonzero(&lit_lens).max(256) + 1; // number of lit/len codes
+        let hdist = find_last_nonzero(&dist_lens).max(0) + 1; // number of dist codes
+
+        // code-length code lengths
+        let mut clens = build_clens(&lit_lens[..hlit], &dist_lens[..hdist])?;
+        let hclen = find_last_nonzero(&clens).max(3) + 1;
+        let cl_codes = gen_codes(&clens);
+
+        // code tables for actual data
+        let lit_codes = gen_codes(&lit_lens);
+        let dist_codes = gen_codes(&dist_lens);
+
+        // 3) Header
+        let mut bw = BitWriter::new();
+        bw.write_bit(1);        // BFINAL
+        bw.write_bits(2, 2);    // BTYPE=10
+        bw.write_bits((hlit - 257) as u32, 5);
+        bw.write_bits((hdist - 1) as u32, 5);
+        bw.write_bits((hclen - 4) as u32, 4);
+        for i in 0..hclen {
+            bw.write_bits(clens[CODE_LENGTH_ORDER[i]] as u32, 3);
+        }
+
+        // 4) Encoded code lengths using RLE
+        rle_encode(&mut bw, &lit_lens[..hlit], &cl_codes);
+        rle_encode(&mut bw, &dist_lens[..hdist], &cl_codes);
+
+        // 5) Encode token stream
+        for token in tokens {
+            match *token {
+                Token::Literal(b) => {
+                    if let Some((code, len)) = lit_codes[b as usize] {
+                        bw.write_bits(code, len);
+                    }
+                }
+                Token::Match { length, distance } => {
+                    let (sym, eb, base) = length_code_and_bits(length);
+                    let (code, len) = lit_codes[sym].unwrap();
+                    bw.write_bits(code, len);
+                    bw.write_bits((length - base) as u32, eb);
+
+                    let (dsym, deb, dbase) = distance_code_and_bits(distance);
+                    let (dcode, dlen) = dist_codes[dsym].unwrap();
+                    bw.write_bits(dcode, dlen);
+                    bw.write_bits((distance - dbase) as u32, deb);
+                }
+            }
+        }
+
+        // EOB
+        let (eob_code, eob_len) = lit_codes[256].unwrap();
+        bw.write_bits(eob_code, eob_len);
+        bw.align_byte();
+        out.extend_from_slice(&bw.finish());
+        Ok(())
+    }
 }
 
 impl GzEncoder {
@@ -533,6 +614,11 @@ mod tests {
     #[test]
     fn test_empty_input_deflate() {
         deflate_round_trip(DeflateBlockType::FixedHuffman, b"");
+    }
+
+    #[test]
+    fn test_empty_dynamic_deflate() {
+        deflate_round_trip(DeflateBlockType::DynamicHuffman, b"");
     }
   
     #[test]
