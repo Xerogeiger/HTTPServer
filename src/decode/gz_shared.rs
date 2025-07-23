@@ -205,35 +205,40 @@ pub fn compute_crc16(data: &[u8]) -> u16 {
 pub fn build_codes(
     lens: &[u8],
 ) -> (std::collections::HashMap<(u32, u8), usize>, u8) {
+    use std::collections::HashMap;
     // 1) Count how many codes of each length
-    let mut counts = std::collections::BTreeMap::new();
-    for &l in lens { if l > 0 { *counts.entry(l).or_insert(0usize) += 1 } }
-    // 2) For each length, assign starting codes
-    let mut code = 0u32;
-    let mut next_code = std::collections::BTreeMap::new();
-    for (&len, &cnt) in &counts {
-        code <<= 1;                    // shift to this length
-        next_code.insert(len, code);
-        code += cnt as u32;            // reserve block
-    }
-    // 3) Build map: for each symbol, if its length>0, assign code and increment
-    let mut table = std::collections::HashMap::new();
-    let mut max_len = 0;
-    for (symbol, &len) in lens.iter().enumerate() {
-        if len > 0 {
-            let entry = next_code.get_mut(&len).unwrap();
-            // Codes are transmitted least significant bit first.  Reverse the
-            // canonical code bits so that the decoder can compare the bit
-            // stream incrementally.
-            let mut rev = 0u32;
-            for i in 0..len {
-                rev |= ((*entry >> i) & 1) << (len - 1 - i);
-            }
-            table.insert((rev, len), symbol);
-            *entry += 1;
-            max_len = max_len.max(len);
+    let max_bits = *lens.iter().max().unwrap_or(&0) as usize;
+    let mut bl_count = vec![0u32; max_bits + 1];
+    for &l in lens {
+        if l > 0 {
+            bl_count[l as usize] += 1;
         }
     }
+
+    // 2) Determine the first code for each length
+    let mut next_code = vec![0u32; max_bits + 1];
+    let mut code = 0u32;
+    for bits in 1..=max_bits {
+        code = (code + bl_count[bits - 1]) << 1;
+        next_code[bits] = code;
+    }
+
+    // 3) Build map: for each symbol, assign code if length > 0
+    let mut table = HashMap::new();
+    let mut max_len = 0u8;
+    for (symbol, &len) in lens.iter().enumerate() {
+        if len > 0 {
+            let c = next_code[len as usize];
+            let mut rev = 0u32;
+            for i in 0..len {
+                rev |= ((c >> i) & 1) << (len - 1 - i);
+            }
+            table.insert((rev, len), symbol);
+            next_code[len as usize] += 1;
+            if len > max_len { max_len = len; }
+        }
+    }
+
     (table, max_len)
 }
 
