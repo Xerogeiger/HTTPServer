@@ -186,8 +186,26 @@ impl DeflateEncoder {
         }
 
         // 2) generate code lengths
-        let lit_lens = huffman_code_lengths(&lit_freq, 15)?;
-        let dist_lens = huffman_code_lengths(&dist_freq, 15)?;
+        let mut lit_lens = huffman_code_lengths(&lit_freq, 15)?;
+        let mut dist_lens = huffman_code_lengths(&dist_freq, 15)?;
+
+        // ensure required symbols have codes
+        if lit_lens[256] == 0 {
+            lit_lens[256] = 1;
+        }
+
+        for token in tokens {
+            if let Token::Match { length, distance } = *token {
+                let (sym, _, _) = length_code_and_bits(length);
+                if lit_lens[sym] == 0 {
+                    lit_lens[sym] = 1;
+                }
+                let (dsym, _, _) = distance_code_and_bits(distance);
+                if dist_lens[dsym] == 0 {
+                    dist_lens[dsym] = 1;
+                }
+            }
+        }
 
         // 3) write HLIT, HDIST, HCLEN
         let last_lit = find_last_nonzero(&lit_lens);
@@ -283,8 +301,10 @@ impl GzEncoder {
     }
 }
 
-/// Compute length-limited Huffman code lengths using a binary tree followed by
-/// a balancing step. All returned lengths are guaranteed to be ≤ `max_bits`.
+/// Compute length‑limited Huffman code lengths for the given symbol
+/// frequencies. First a normal Huffman tree is built to obtain initial
+/// lengths. If any length exceeds `max_bits`, the counts are adjusted in a
+/// zlib‑style manner so that all final lengths are at most `max_bits`.
 fn huffman_code_lengths(symbol_frequencies: &[u32], max_bits: usize) -> io::Result<Vec<u8>> {
     let n = symbol_frequencies.len();
 
@@ -388,21 +408,25 @@ fn huffman_code_lengths(symbol_frequencies: &[u32], max_bits: usize) -> io::Resu
         }
     }
 
-    // redistribute lengths longer than max_bits
+    // limit lengths greater than `max_bits`
     if max_len > max_bits {
-        let mut overflow: usize = bl_count
-            .iter()
-            .enumerate()
-            .skip(max_bits + 1)
-            .map(|(_, &c)| c)
-            .sum();
+        let mut overflow = 0usize;
+        for bits in max_bits + 1..=max_len {
+            overflow += bl_count[bits];
+            bl_count[max_bits] += bl_count[bits];
+            bl_count[bits] = 0;
+        }
 
-        for bits in ((1 + max_bits)..=max_len).rev() {
-            while bl_count[bits] > 0 && overflow > 0 {
-                bl_count[bits] -= 1;
-                bl_count[bits - 1] += 2;
-                overflow -= 1;
+        while overflow > 0 {
+            let mut bits = max_bits - 1;
+            while bl_count[bits] == 0 {
+                bits -= 1;
             }
+            // move one count from the longest available length
+            bl_count[bits] -= 1;
+            bl_count[bits + 1] += 2;
+            bl_count[max_bits] -= 1;
+            overflow -= 1;
         }
         max_len = max_bits;
     }
@@ -611,12 +635,11 @@ mod tests {
     fn test_empty_input_deflate() {
         deflate_round_trip(DeflateBlockType::FixedHuffman, b"");
     }
-
+  
     #[test]
     fn test_deflate_dynamic_round_trip() {
         deflate_round_trip(DeflateBlockType::DynamicHuffman, b"Hello, dynamic!");
     }
-
     // —— GZIP round‑trip tests —— //
 
     #[test]
