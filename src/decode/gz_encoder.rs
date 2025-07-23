@@ -212,7 +212,7 @@ impl DeflateEncoder {
         let last_dist = find_last_nonzero(&dist_lens);
         let hlit = (last_lit + 1) - 257;
         let hdist = (last_dist + 1) - 1;
-        let clens = build_clens(&lit_lens, &dist_lens)?;
+        let clens = build_clens(&lit_lens[..last_lit + 1], &dist_lens[..last_dist + 1])?;
         let last_clen = find_last_nonzero(&clens);
         let hclen = (last_clen + 1) - 4;
         bw.write_bits(hlit as u32, 5);

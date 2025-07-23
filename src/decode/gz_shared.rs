@@ -206,35 +206,12 @@ pub fn build_codes(
     lens: &[u8],
 ) -> (std::collections::HashMap<(u32, u8), usize>, u8) {
     use std::collections::HashMap;
-    // 1) Count how many codes of each length
-    let max_bits = *lens.iter().max().unwrap_or(&0) as usize;
-    let mut bl_count = vec![0u32; max_bits + 1];
-    for &l in lens {
-        if l > 0 {
-            bl_count[l as usize] += 1;
-        }
-    }
-
-    // 2) Determine the first code for each length
-    let mut next_code = vec![0u32; max_bits + 1];
-    let mut code = 0u32;
-    for bits in 1..=max_bits {
-        code = (code + bl_count[bits - 1]) << 1;
-        next_code[bits] = code;
-    }
-
-    // 3) Build map: for each symbol, assign code if length > 0
+    let codes = gen_codes(lens);
     let mut table = HashMap::new();
     let mut max_len = 0u8;
-    for (symbol, &len) in lens.iter().enumerate() {
-        if len > 0 {
-            let c = next_code[len as usize];
-            let mut rev = 0u32;
-            for i in 0..len {
-                rev |= ((c >> i) & 1) << (len - 1 - i);
-            }
-            table.insert((rev, len), symbol);
-            next_code[len as usize] += 1;
+    for (sym, opt) in codes.into_iter().enumerate() {
+        if let Some((code, len)) = opt {
+            table.insert((code, len), sym);
             if len > max_len { max_len = len; }
         }
     }
