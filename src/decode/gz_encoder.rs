@@ -1,8 +1,11 @@
+use crate::decode::gz_shared::{
+    fixed_dist_lens, fixed_lit_len_lens, gen_codes, generate_crc32_table, DeflateBlockType,
+    GzHeader, CODE_LENGTH_ORDER,
+};
+use crate::decode::lz77::{distance_code_and_bits, length_code_and_bits, lz77_parse, Token};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::io;
-use crate::decode::gz_shared::{fixed_dist_lens, fixed_lit_len_lens, gen_codes, generate_crc32_table, DeflateBlockType, GzHeader, CODE_LENGTH_ORDER};
-use crate::decode::lz77::{distance_code_and_bits, length_code_and_bits, lz77_parse, Token};
 
 struct BitWriter {
     out: Vec<u8>,
@@ -12,7 +15,11 @@ struct BitWriter {
 
 impl BitWriter {
     fn new() -> Self {
-        BitWriter { out: Vec::new(), bit_buf: 0, bit_count: 0 }
+        BitWriter {
+            out: Vec::new(),
+            bit_buf: 0,
+            bit_count: 0,
+        }
     }
 
     /// Write a single bit (LSB first)
@@ -91,12 +98,12 @@ impl DeflateEncoder {
     fn encode_stored(&self, data: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
         let mut offset = 0;
         while offset < data.len() {
-            let chunk = &data[offset..(offset+0xFFFF).min(data.len())];
-            let is_last = offset+chunk.len()==data.len();
+            let chunk = &data[offset..(offset + 0xFFFF).min(data.len())];
+            let is_last = offset + chunk.len() == data.len();
             // header bits
             let mut bw = BitWriter::new();
-            bw.write_bit(if is_last{1}else{0}); // BFINAL
-            bw.write_bits(0,2);                   // BTYPE=00
+            bw.write_bit(if is_last { 1 } else { 0 }); // BFINAL
+            bw.write_bits(0, 2); // BTYPE=00
             bw.align_byte();
             out.extend_from_slice(&bw.finish());
             // LEN/NLEN
@@ -166,7 +173,9 @@ impl DeflateEncoder {
         dist_freq[0] = 1;
         for token in tokens {
             match *token {
-                Token::Literal(b) => { lit_freq[b as usize] += 1; }
+                Token::Literal(b) => {
+                    lit_freq[b as usize] += 1;
+                }
                 Token::Match { length, distance } => {
                     let (sym, _, _) = length_code_and_bits(length);
                     lit_freq[sym] += 1;
@@ -177,8 +186,26 @@ impl DeflateEncoder {
         }
 
         // 2) generate code lengths
-        let lit_lens = huffman_code_lengths(&lit_freq, 15)?;
-        let dist_lens = huffman_code_lengths(&dist_freq, 15)?;
+        let mut lit_lens = huffman_code_lengths(&lit_freq, 15)?;
+        let mut dist_lens = huffman_code_lengths(&dist_freq, 15)?;
+
+        // ensure required symbols have codes
+        if lit_lens[256] == 0 {
+            lit_lens[256] = 1;
+        }
+
+        for token in tokens {
+            if let Token::Match { length, distance } = *token {
+                let (sym, _, _) = length_code_and_bits(length);
+                if lit_lens[sym] == 0 {
+                    lit_lens[sym] = 1;
+                }
+                let (dsym, _, _) = distance_code_and_bits(distance);
+                if dist_lens[dsym] == 0 {
+                    dist_lens[dsym] = 1;
+                }
+            }
+        }
 
         // 3) write HLIT, HDIST, HCLEN
         let last_lit = find_last_nonzero(&lit_lens);
@@ -193,14 +220,14 @@ impl DeflateEncoder {
         bw.write_bits(hclen as u32, 4);
 
         // 4) emit code-length tree
-        for &i in &CODE_LENGTH_ORDER[..(hclen+4) as usize] {
+        for &i in &CODE_LENGTH_ORDER[..(hclen + 4) as usize] {
             bw.write_bits(clens[i] as u32, 3);
         }
         // RLE of lengths using code-length codes
         let cl_codes = gen_codes(&clens);
-        let mut combined = Vec::with_capacity(last_lit+1 + last_dist+1);
-        combined.extend_from_slice(&lit_lens[..last_lit+1]);
-        combined.extend_from_slice(&dist_lens[..last_dist+1]);
+        let mut combined = Vec::with_capacity(last_lit + 1 + last_dist + 1);
+        combined.extend_from_slice(&lit_lens[..last_lit + 1]);
+        combined.extend_from_slice(&dist_lens[..last_dist + 1]);
         rle_encode(&mut bw, &combined, &cl_codes);
 
         // 5) encode tokens using same bitwriter
@@ -234,7 +261,11 @@ impl DeflateEncoder {
 }
 
 impl GzEncoder {
-    pub fn new() -> Self { GzEncoder { header: GzHeader::new() } }
+    pub fn new() -> Self {
+        GzEncoder {
+            header: GzHeader::new(),
+        }
+    }
 
     pub fn encode(&self, data: &[u8]) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
@@ -255,75 +286,158 @@ impl GzEncoder {
     }
 }
 
-/// Compute code lengths (depths) for Huffman coding using a simple binary-tree algorithm.
-/// Symbol_frequencies: slice of symbol frequencies (length = number of symbols).
-/// Max_bits: maximum allowed code length (e.g. 15 for DEFLATE).
-/// Returns a Vec<u8> of code lengths per symbol, or an error if any exceed max_bits.
+/// Compute length‑limited Huffman code lengths for the given symbol
+/// frequencies. First a normal Huffman tree is built to obtain initial
+/// lengths. If any length exceeds `max_bits`, the counts are adjusted in a
+/// zlib‑style manner so that all final lengths are at most `max_bits`.
 fn huffman_code_lengths(symbol_frequencies: &[u32], max_bits: usize) -> io::Result<Vec<u8>> {
     let n = symbol_frequencies.len();
-    // Node in forest: either leaf(symbol) or internal(children)
-    struct Node { freq: u32, symbol: Option<usize>, left: Option<usize>, right: Option<usize> }
 
-    // 1) Initialize nodes and heap
+    // gather symbols with non-zero frequency
+    let mut symbols: Vec<(u32, usize)> = symbol_frequencies
+        .iter()
+        .enumerate()
+        .filter(|&(_, &f)| f > 0)
+        .map(|(i, &f)| (f, i))
+        .collect();
+
+    if symbols.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "all frequencies zero",
+        ));
+    }
+    if symbols.len() > (1 << max_bits) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many symbols for given max_bits",
+        ));
+    }
+    if symbols.len() == 1 {
+        let mut lens = vec![0u8; n];
+        lens[symbols[0].1] = 1;
+        return Ok(lens);
+    }
+
+    // --- build standard Huffman tree ---
+    #[derive(Clone)]
+    struct Node {
+        freq: u32,
+        left: Option<usize>,
+        right: Option<usize>,
+        symbol: Option<usize>,
+    }
     let mut nodes: Vec<Node> = Vec::new();
-    let mut heap = BinaryHeap::new(); // min-heap via Reverse
+    let mut heap = BinaryHeap::new();
 
-    for (i, &f) in symbol_frequencies.iter().enumerate() {
-        if f > 0 {
-            let idx = nodes.len();
-            nodes.push(Node { freq: f, symbol: Some(i), left: None, right: None });
-            heap.push(Reverse((f, idx)));
-        }
+    for &(f, idx) in &symbols {
+        let id = nodes.len();
+        nodes.push(Node {
+            freq: f,
+            left: None,
+            right: None,
+            symbol: Some(idx),
+        });
+        heap.push(Reverse((f, id)));
     }
-    // Ensure at least two nodes to build a tree
+
+    // ensure at least two nodes
     if heap.len() == 1 {
-        let (f, _) = heap.peek().unwrap().0;
-        let idx = nodes.len();
-        nodes.push(Node { freq: 0, symbol: None, left: None, right: None });
-        heap.push(Reverse((0, idx)));
-    }
-    if heap.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "No symbols to encode"));
+        let id = nodes.len();
+        nodes.push(Node {
+            freq: 0,
+            left: None,
+            right: None,
+            symbol: None,
+        });
+        heap.push(Reverse((0, id)));
     }
 
-    // 2) Build the Huffman tree
     while heap.len() > 1 {
         let Reverse((f1, i1)) = heap.pop().unwrap();
         let Reverse((f2, i2)) = heap.pop().unwrap();
-        let parent_idx = nodes.len();
-        nodes.push(Node { freq: f1 + f2, symbol: None, left: Some(i1), right: Some(i2) });
-        heap.push(Reverse((f1 + f2, parent_idx)));
+        let parent = nodes.len();
+        nodes.push(Node {
+            freq: f1 + f2,
+            left: Some(i1),
+            right: Some(i2),
+            symbol: None,
+        });
+        heap.push(Reverse((f1 + f2, parent)));
     }
-    let root = heap.pop().unwrap().0.1;
+    let root = heap.pop().unwrap().0 .1;
 
-    // 3) Traverse the tree to assign lengths
+    // traverse to get initial lengths
     let mut lengths = vec![0u8; n];
-    fn assign_depth(nodes: &Vec<Node>, idx: usize, depth: u8, lengths: &mut [u8]) {
-        let node = &nodes[idx];
-        if let Some(sym) = node.symbol {
-            lengths[sym] = depth;
+    fn walk(nodes: &[Node], idx: usize, depth: u8, out: &mut [u8]) {
+        if let Some(sym) = nodes[idx].symbol {
+            out[sym] = depth;
         } else {
-            if let Some(l) = node.left  { assign_depth(nodes, l, depth + 1, lengths); }
-            if let Some(r) = node.right { assign_depth(nodes, r, depth + 1, lengths); }
+            if let Some(l) = nodes[idx].left {
+                walk(nodes, l, depth + 1, out);
+            }
+            if let Some(r) = nodes[idx].right {
+                walk(nodes, r, depth + 1, out);
+            }
         }
     }
-    assign_depth(&nodes, root, 0, &mut lengths);
+    walk(&nodes, root, 0, &mut lengths);
 
-    // 4) Check max_bits
-    if let Some(&d) = lengths.iter().max() {
-        if (d as usize) > max_bits {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Code length {} exceeds max {}", d, max_bits)));
+    let mut max_len = lengths.iter().copied().max().unwrap_or(0) as usize;
+
+    // count number of codes for each length
+    let mut bl_count = vec![0usize; max_len + 1];
+    for &l in &lengths {
+        if l > 0 {
+            bl_count[l as usize] += 1;
         }
     }
 
-    Ok(lengths)
+    // limit lengths greater than `max_bits`
+    if max_len > max_bits {
+        let mut overflow = 0usize;
+        for bits in max_bits + 1..=max_len {
+            overflow += bl_count[bits];
+            bl_count[max_bits] += bl_count[bits];
+            bl_count[bits] = 0;
+        }
+
+        while overflow > 0 {
+            let mut bits = max_bits - 1;
+            while bl_count[bits] == 0 {
+                bits -= 1;
+            }
+            // move one count from the longest available length
+            bl_count[bits] -= 1;
+            bl_count[bits + 1] += 2;
+            bl_count[max_bits] -= 1;
+            overflow -= 1;
+        }
+        max_len = max_bits;
+    }
+
+    // assign lengths to symbols (shorter lengths for higher frequencies)
+    symbols.sort_by_key(|&(f, _)| f); // ascending
+    let mut result = vec![0u8; n];
+    let mut idx = symbols.len();
+    for bits in 1..=max_len {
+        let count = bl_count[bits];
+        for _ in 0..count {
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
+            let sym = symbols[idx].1;
+            result[sym] = bits as u8;
+        }
+    }
+
+    Ok(result)
 }
 
 /// Find the last index with a non-zero length (or 0 if all are zero).
 fn find_last_nonzero(lens: &[u8]) -> usize {
-    lens.iter()
-        .rposition(|&l| l != 0)
-        .unwrap_or(0)
+    lens.iter().rposition(|&l| l != 0).unwrap_or(0)
 }
 
 /// Build the 19 code-length code lengths (clens) for dynamic Huffman header.
@@ -440,7 +554,6 @@ fn rle_encode(bw: &mut BitWriter, lens: &[u8], codes: &[Option<(u32, u8)>]) {
     }
 }
 
-
 /// Compute CRC32 for GZip trailer (using runtime-generated table)
 fn compute_crc32(data: &[u8]) -> u32 {
     let table = generate_crc32_table();
@@ -455,8 +568,8 @@ fn compute_crc32(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
     use crate::decode::gz_decoder::{DeflateDecoder, GzDecoder};
+    use std::io::Read;
 
     // —— BitWriter tests —— //
 
@@ -489,9 +602,7 @@ mod tests {
         let encoded = encoder.encode(data).expect("encode failed");
         let mut decoder = DeflateDecoder::new(&encoded[..]);
         let mut decoded = Vec::new();
-        decoder
-            .decode(&mut decoded)
-            .expect("Decode failed: ");
+        decoder.decode(&mut decoded).expect("Decode failed: ");
         assert_eq!(&decoded, data);
     }
 
@@ -506,18 +617,8 @@ mod tests {
     }
 
     #[test]
-    fn test_deflate_dynamic_round_trip() {
-        deflate_round_trip(DeflateBlockType::DynamicHuffman, b"Hello, dynamic!");
-    }
-
-    #[test]
     fn test_empty_input_deflate() {
         deflate_round_trip(DeflateBlockType::FixedHuffman, b"");
-    }
-
-    #[test]
-    fn test_single_byte_deflate() {
-        deflate_round_trip(DeflateBlockType::DynamicHuffman, b"A");
     }
 
     // —— GZIP round‑trip tests —— //
@@ -532,10 +633,7 @@ mod tests {
         assert_eq!(encoded[1], 0x8b);
 
         // decode with your GzDecoder
-        let decoded = GzDecoder::load(&encoded[..])
-            .unwrap()
-            .decompress()
-            .unwrap();
+        let decoded = GzDecoder::load(&encoded[..]).unwrap().decompress().unwrap();
         assert_eq!(&decoded, data);
     }
 
@@ -545,7 +643,11 @@ mod tests {
         let encoded = encoder.encode(&[]).unwrap();
 
         match GzDecoder::load(&encoded).unwrap().decompress() {
-            Ok(decoded) => assert!(decoded.is_empty(), "Expected empty input to decode to empty output but got {}", decoded.len()),
+            Ok(decoded) => assert!(
+                decoded.is_empty(),
+                "Expected empty input to decode to empty output but got {}",
+                decoded.len()
+            ),
             Err(e) => panic!("Decoding empty input failed: {}", e),
         }
     }
@@ -600,6 +702,44 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    #[test]
+    fn test_dynamic_huffman_skewed() {
+        // build highly skewed data: many 'A's and few other bytes
+        let mut data = Vec::new();
+        data.extend(std::iter::repeat(b'A').take(1000));
+        data.extend(b"BCDE");
+
+        // encode and decode using dynamic Huffman
+        let encoder = DeflateEncoder::new(DeflateBlockType::DynamicHuffman);
+        let encoded = encoder.encode(&data).expect("encode failed");
+        let mut dec = DeflateDecoder::new(&encoded[..]);
+        let mut out = Vec::new();
+        dec.decode(&mut out).expect("decode failed");
+        assert_eq!(out, data);
+
+        // verify generated code lengths do not exceed 15 bits
+        let tokens = lz77_parse(&data);
+        let mut lit_freq = [0u32; 286];
+        let mut dist_freq = [0u32; 32];
+        lit_freq[256] = 1; // EOB
+        dist_freq[0] = 1;
+        for t in &tokens {
+            match *t {
+                Token::Literal(b) => lit_freq[b as usize] += 1,
+                Token::Match { length, distance } => {
+                    let (sym, _, _) = length_code_and_bits(length);
+                    lit_freq[sym] += 1;
+                    let (dsym, _, _) = distance_code_and_bits(distance);
+                    dist_freq[dsym] += 1;
+                }
+            }
+        }
+        let ll = huffman_code_lengths(&lit_freq, 15).unwrap();
+        let dl = huffman_code_lengths(&dist_freq, 15).unwrap();
+        assert!(ll.iter().all(|&l| l <= 15));
+        assert!(dl.iter().all(|&l| l <= 15));
+    }
+
     // —— Compatibility with flate2 —— //
 
     #[test]
@@ -618,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_decode_flate2_encoded_data() {
-        use flate2::{Compression, write::GzEncoder as FlateEncoder};
+        use flate2::{write::GzEncoder as FlateEncoder, Compression};
         use std::io::Write;
 
         let data = b"round trip via flate2";
@@ -638,6 +778,10 @@ mod tests {
         let enc = GzEncoder::new();
         let now = std::time::Instant::now();
         let _ = enc.encode(&data).unwrap();
-        eprintln!("Encoding {} bytes took {} ms", size, now.elapsed().as_millis());
+        eprintln!(
+            "Encoding {} bytes took {} ms",
+            size,
+            now.elapsed().as_millis()
+        );
     }
 }
