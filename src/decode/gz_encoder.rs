@@ -373,20 +373,35 @@ fn huffman_code_lengths(symbol_frequencies: &[u32], max_bits: usize) -> io::Resu
         }
     }
 
-    // redistribute lengths longer than max_bits
+    // redistribute lengths longer than max_bits using a variant of the
+    // algorithm employed by zlib. `overflow` tracks how many codes exceed the
+    // allowed length. We repeatedly move one leaf from the deepest level up
+    // and adjust sibling counts to keep the prefix property intact.
     if max_len > max_bits {
-        let mut overflow: usize = bl_count
+        let mut overflow: i32 = bl_count
             .iter()
             .enumerate()
             .skip(max_bits + 1)
-            .map(|(_, &c)| c)
+            .map(|(_, &c)| c as i32)
             .sum();
 
-        for bits in ((1 + max_bits)..=max_len).rev() {
-            while bl_count[bits] > 0 && overflow > 0 {
+        while overflow > 0 {
+            let mut bits = max_len - 1;
+            while bl_count[bits] == 0 {
+                bits -= 1;
+            }
+            // move one node from `bits` to `bits+1`
+            bl_count[bits] -= 1;
+            bl_count[bits + 1] += 2;
+            bl_count[max_len] -= 1;
+            overflow -= 2;
+        }
+
+        // Propagate counts from deeper levels to shallower ones
+        for bits in (max_bits + 1..=max_len).rev() {
+            while bl_count[bits] > 0 {
                 bl_count[bits] -= 1;
                 bl_count[bits - 1] += 2;
-                overflow -= 1;
             }
         }
         max_len = max_bits;
@@ -406,6 +421,13 @@ fn huffman_code_lengths(symbol_frequencies: &[u32], max_bits: usize) -> io::Resu
             let sym = symbols[idx].1;
             result[sym] = bits as u8;
         }
+    }
+    // In case rounding left some symbols without lengths, give them the
+    // longest allowed length.
+    while idx > 0 {
+        idx -= 1;
+        let sym = symbols[idx].1;
+        result[sym] = max_len as u8;
     }
 
     Ok(result)
@@ -759,5 +781,25 @@ mod tests {
             size,
             now.elapsed().as_millis()
         );
+    }
+
+    #[test]
+    fn test_huffman_stress_random() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        for _ in 0..100 {
+            let mut freqs = [0u32; 286];
+            for f in freqs.iter_mut() {
+                *f = rng.gen_range(0..1000);
+            }
+            freqs[256] += 1; // ensure EOB present
+            let lens = huffman_code_lengths(&freqs, 15).unwrap();
+            assert!(lens.iter().all(|&l| l <= 15));
+            for (i, &f) in freqs.iter().enumerate() {
+                if f > 0 {
+                    assert!(lens[i] > 0, "symbol {} has zero length", i);
+                }
+            }
+        }
     }
 }
