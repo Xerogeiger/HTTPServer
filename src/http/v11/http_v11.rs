@@ -346,10 +346,11 @@ impl HttpServerClient for HttpV11ServerClient {
         r.headers.push(("Connection".to_string(), "keep-alive".to_string()));
 
         let chunked = !r.body.is_none() && r.body.clone().unwrap_or_default().len() > 1024; // Arbitrary threshold for chunked encoding
+        let is_gzip = r.headers.iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("Content-Encoding") && v.eq_ignore_ascii_case("gzip"));
 
         if chunked {
             r.headers.push(("Transfer-Encoding".to_string(), "chunked".to_string()));
-            r.headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
         } else {
             let content_length = r.body.as_ref().map_or(0, |b| b.len());
             r.headers.push(("Content-Length".to_string(), content_length.to_string()));
@@ -367,12 +368,19 @@ impl HttpServerClient for HttpV11ServerClient {
         if(chunked) {
             response_text = format!("{}{}", status_line, headers);
             self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
-            let body = r.body.clone().unwrap_or_default();
-            let encoded = GzEncoder::new().encode(&body)
-                .map_err(|e| format!("Failed to encode response body: {}", e))?;
-            write_chunked(self.reader.get_mut(), &encoded).map_err(|e| format!("Failed to write chunked response: {}", e))?;
+
+            let mut body = r.body.clone().unwrap_or_default();
+            if is_gzip {
+                body = GzEncoder::new().encode(&body)
+                    .map_err(|e| format!("Failed to gzip response body: {}", e))?;;
+            }
+            write_chunked(self.reader.get_mut(), &body).map_err(|e| format!("Failed to write chunked response: {}", e))?;
         } else {
-            let body = r.body.clone().unwrap_or_default();
+            let mut body = r.body.clone().unwrap_or_default();
+            if is_gzip {
+                body = GzEncoder::new().encode(&body)
+                    .map_err(|e| format!("Failed to gzip response body: {}", e))?;;
+            }
             response_text = format!("{}{}{}", status_line, headers, String::from_utf8_lossy(&body));
             self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response: {}", e))?;
         }
@@ -686,7 +694,12 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                             && mapping.matches_method(&request.method) {
                             handled = true;
                             match mapping.handle_request(&request) {
-                                Ok(resp) => {
+                                Ok(mut resp) => {
+                                    let response_length = resp.body.as_ref().map_or(0, |b| b.len());
+                                    if response_length > 1024 && request.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("Accept-Encoding") && v.contains("gzip")) {
+                                        // Add gzip encoding if body is large
+                                        resp.headers.push(("Content-Encoding".into(), "gzip".into()));
+                                    }
                                     if let Err(e) = c.send_response(resp) {
                                         eprintln!("Sending Response: {}", e);
                                     }

@@ -272,9 +272,24 @@ impl GzEncoder {
         // 1) GZip header
         out.extend_from_slice(&self.header.to_bytes());
 
+        let before_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "System time before epoch"))?;
+
         // 2) Body
-        let mut deflate = DeflateEncoder::new(DeflateBlockType::FixedHuffman);
+        let mut deflate = DeflateEncoder::new(DeflateBlockType::DynamicHuffman);
+
+        // Encode the data using deflate
         let deflated_data = deflate.encode(data)?;
+
+        let after_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "System time before epoch"))?;
+
+        if cfg!(debug_assertions) {
+            println!("Encoding {} bytes with GZip took {} milliseconds", data.len(), (after_time - before_time).as_millis());
+        }
+
         out.extend_from_slice(&deflated_data);
 
         // 3) Trailer
@@ -620,7 +635,11 @@ mod tests {
     fn test_empty_input_deflate() {
         deflate_round_trip(DeflateBlockType::FixedHuffman, b"");
     }
-
+  
+    #[test]
+    fn test_deflate_dynamic_round_trip() {
+        deflate_round_trip(DeflateBlockType::DynamicHuffman, b"Hello, dynamic!");
+    }
     // —— GZIP round‑trip tests —— //
 
     #[test]
