@@ -1,2 +1,4 @@
 /target
 /.idea/
+/Site/static/node_modules/
+/Site/static/dist/
