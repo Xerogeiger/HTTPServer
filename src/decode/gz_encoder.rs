@@ -213,8 +213,14 @@ impl DeflateEncoder {
         let hlit = (last_lit + 1) - 257;
         let hdist = (last_dist + 1) - 1;
         let clens = build_clens(&lit_lens[..last_lit + 1], &dist_lens[..last_dist + 1])?;
-        let last_clen = find_last_nonzero(&clens);
-        let hclen = (last_clen + 1) - 4;
+        let last_clen_order = CODE_LENGTH_ORDER
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|&(_, &idx)| clens[idx] != 0)
+            .map(|(pos, _)| pos + 1)
+            .unwrap_or(0);
+        let hclen = last_clen_order.saturating_sub(4);
         bw.write_bits(hlit as u32, 5);
         bw.write_bits(hdist as u32, 5);
         bw.write_bits(hclen as u32, 4);
@@ -787,6 +793,24 @@ mod tests {
 
         let decoded = GzDecoder::load(&encoded).unwrap().decompress().unwrap();
         assert_eq!(&decoded, data);
+    }
+
+    #[test]
+    fn test_hclen_computation_order() {
+        let mut clens = [0u8; 19];
+        clens[1] = 3; // only symbol 1 has a length
+
+        let last_clen_order = CODE_LENGTH_ORDER
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|&(_, &idx)| clens[idx] != 0)
+            .map(|(pos, _)| pos + 1)
+            .unwrap_or(0);
+        let hclen = last_clen_order.saturating_sub(4);
+
+        assert_eq!(last_clen_order, 18); // position of symbol 1 in the order + 1
+        assert_eq!(hclen, 14);
     }
 
     #[test]
