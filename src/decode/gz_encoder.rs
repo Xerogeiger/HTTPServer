@@ -221,7 +221,9 @@ impl DeflateEncoder {
         combined.extend_from_slice(&lit_lens[..hlit]);
         combined.extend_from_slice(&dist_lens[..hdist]);
         let rle_seq = rle_encode(&mut bw, &combined, &cl_codes);
-        println!("RLE output: {:?}", rle_seq);
+        #[cfg(debug_assertions)] {
+            println!("RLE output: {:?}", rle_seq);
+        }
 
         // 5) Encode token stream
         for token in tokens {
@@ -402,25 +404,30 @@ fn huffman_code_lengths(symbol_frequencies: &[u32], max_bits: usize) -> io::Resu
         }
     }
 
-    // limit lengths greater than `max_bits`
+    // limit lengths greater than `max_bits` using the same strategy as zlib
     if max_len > max_bits {
-        let mut overflow = 0usize;
         for bits in max_bits + 1..=max_len {
-            overflow += bl_count[bits];
             bl_count[max_bits] += bl_count[bits];
             bl_count[bits] = 0;
         }
 
-        while overflow > 0 {
+        while {
+            let total: u32 = bl_count[1..=max_bits]
+                .iter()
+                .rev()
+                .enumerate()
+                .map(|(i, &c)| (c as u32) << i)
+                .sum();
+            total > (1u32 << max_bits)
+        } {
             let mut bits = max_bits - 1;
+            // move one count from the longest available length
             while bl_count[bits] == 0 {
                 bits -= 1;
             }
-            // move one count from the longest available length
             bl_count[bits] -= 1;
             bl_count[bits + 1] += 2;
             bl_count[max_bits] -= 1;
-            overflow -= 1;
         }
         max_len = max_bits;
     }

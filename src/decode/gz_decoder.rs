@@ -1,10 +1,9 @@
-use std::collections::HashMap;
-use std::io;
 use crate::decode::gz_shared::{
-    fixed_dist_lens, fixed_lit_len_lens, build_codes, generate_crc32_table,
-    compute_crc16, GzHeader, CODE_LENGTH_ORDER, DIST_BASE, LENGTH_BASE,
+    build_codes, compute_crc16, fixed_dist_lens, fixed_lit_len_lens,
+    generate_crc32_table, GzHeader, CODE_LENGTH_ORDER, DIST_BASE, LENGTH_BASE,
 };
 use crate::decode::lz77::{lz77_reconstruct, Token};
+use std::io;
 
 struct BitReader<'a> {
     data: &'a [u8],
@@ -33,7 +32,7 @@ impl<'a> BitReader<'a> {
     }
 
     /// Read multiple bits (little‑endian)
-    fn read_bits(&mut self, mut count: u8) -> io::Result<u32> {
+    fn read_bits(&mut self, count: u8) -> io::Result<u32> {
         let mut acc = 0u32;
         for i in 0..count {
             let b = self.read_bit()? as u32;
@@ -42,7 +41,7 @@ impl<'a> BitReader<'a> {
         Ok(acc)
     }
 
-    /// Move to next byte boundary
+    /// Move to the next byte boundary
     fn align_byte(&mut self) {
         if self.bit_pos != 0 {
             self.bit_pos = 0;
@@ -407,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_inflate_fixed_empty() {
-        // Fixed block with only EOB
+        // Fixed the block with only EOB
         let data = vec![
             0x03, // BFINAL=1,BTYPE=01, EOB bits
             0x00, // padding
@@ -472,7 +471,7 @@ mod tests {
     #[test]
     fn test_load_with_extra_and_crc() {
         use crate::decode::gz_encoder::DeflateEncoder;
-        use crate::decode::gz_shared::{compute_crc32, compute_crc16, DeflateBlockType};
+        use crate::decode::gz_shared::{compute_crc16, compute_crc32, DeflateBlockType};
 
         let mut hdr = GzHeader::new();
         hdr.set_flags(0x04 | 0x02); // FEXTRA | FHCRC
@@ -488,7 +487,7 @@ mod tests {
         gzip.extend_from_slice(&deflated);
         let crc32 = compute_crc32(b"hi");
         gzip.extend_from_slice(&crc32.to_le_bytes());
-        gzip.extend_from_slice(&(2u32).to_le_bytes());
+        gzip.extend_from_slice(&2u32.to_le_bytes());
 
         let decoder = GzDecoder::load(&gzip).unwrap();
         assert!(decoder.header.has_extra_field);
@@ -507,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_decode_flate2_gzip() {
-        use flate2::{Compression, write::GzEncoder as FlateEncoder};
+        use flate2::{write::GzEncoder as FlateEncoder, Compression};
         use std::io::Write;
 
         let data = b"decoder compatibility";
@@ -537,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_repeat_code_length_without_previous() {
-        // Craft dynamic block where the first code-length symbol is 16,
+        // Craft a dynamic block where the first code-length symbol is 16,
         // which should result in an error instead of a panic.
         let data = vec![0x05, 0x00, 0x02, 0x00];
         let res = inflate_to_tokens(&data);
