@@ -187,7 +187,14 @@ impl DeflateEncoder {
 
         // code-length code lengths
         let mut clens = build_clens(&lit_lens[..hlit], &dist_lens[..hdist])?;
-        let hclen = find_last_nonzero(&clens).max(3) + 1;
+        let mut hclen = 0;
+        for (i, &idx) in CODE_LENGTH_ORDER.iter().enumerate() {
+            if clens[idx] != 0 { hclen = i; }
+        }
+        let hclen = hclen.max(3) + 1;
+        for i in hclen..19 {
+            clens[CODE_LENGTH_ORDER[i]] = 0;
+        }
         let cl_codes = gen_codes(&clens);
 
         // debug print HLIT/HDIST/HCLEN fields
@@ -831,5 +838,145 @@ mod tests {
             size,
             now.elapsed().as_millis()
         );
+    }
+
+    #[test]
+    fn test_huffman_code_lengths_png_valid() {
+        use std::fs;
+
+        let data = fs::read("Site/static/images/injector-sc.png")
+            .expect("Error reading test file");
+        let tokens = lz77_parse(&data);
+        let mut lit_freq = [0u32; 286];
+        let mut dist_freq = [0u32; 32];
+        lit_freq[256] = 1;
+        dist_freq[0] = 1;
+        for t in &tokens {
+            match *t {
+                Token::Literal(b) => lit_freq[b as usize] += 1,
+                Token::Match { length, distance } => {
+                    let (lsym, _, _) = length_code_and_bits(length);
+                    lit_freq[lsym] += 1;
+                    let (dsym, _, _) = distance_code_and_bits(distance);
+                    dist_freq[dsym] += 1;
+                }
+            }
+        }
+
+        let lit_lens = huffman_code_lengths(&lit_freq, 15).expect("lit lens");
+        let dist_lens = huffman_code_lengths(&dist_freq, 15).expect("dist lens");
+
+        assert!(lit_lens.iter().all(|&l| l <= 15));
+        assert!(dist_lens.iter().all(|&l| l <= 15));
+
+        let lit_codes = gen_codes(&lit_lens);
+        let dist_codes = gen_codes(&dist_lens);
+        assert!(lit_codes.iter().any(|c| c.is_some()));
+        assert!(dist_codes.iter().any(|c| c.is_some()));
+    }
+
+    #[test]
+    fn test_build_clens_png_valid() {
+        use std::fs;
+
+        let data = fs::read("Site/static/images/injector-sc.png")
+            .expect("Error reading test file");
+        let tokens = lz77_parse(&data);
+        let mut lit_freq = [0u32; 286];
+        let mut dist_freq = [0u32; 32];
+        lit_freq[256] = 1;
+        dist_freq[0] = 1;
+        for t in &tokens {
+            match *t {
+                Token::Literal(b) => lit_freq[b as usize] += 1,
+                Token::Match { length, distance } => {
+                    let (lsym, _, _) = length_code_and_bits(length);
+                    lit_freq[lsym] += 1;
+                    let (dsym, _, _) = distance_code_and_bits(distance);
+                    dist_freq[dsym] += 1;
+                }
+            }
+        }
+        let lit_lens = huffman_code_lengths(&lit_freq, 15).expect("lit lens");
+        let dist_lens = huffman_code_lengths(&dist_freq, 15).expect("dist lens");
+        let hlit = find_last_nonzero(&lit_lens).max(256) + 1;
+        let hdist = find_last_nonzero(&dist_lens).max(0) + 1;
+
+        let clens = build_clens(&lit_lens[..hlit], &dist_lens[..hdist])
+            .expect("clens");
+        println!("clens {:?}", clens);
+        assert!(clens.iter().any(|&l| l != 0));
+
+        let cl_codes = gen_codes(&clens);
+        assert!(cl_codes.iter().any(|c| c.is_some()));
+
+        // ensure HCLEN within valid range
+        let mut hcl_idx = 0;
+        for (i, &idx) in CODE_LENGTH_ORDER.iter().enumerate() { if clens[idx]!=0 { hcl_idx = i; } }
+        let hclen = hcl_idx.max(3) + 1;
+        println!("hclen {}", hclen);
+        assert!(hclen <= 19);
+    }
+
+
+    #[test]
+    fn test_dynamic_header_only_roundtrip() {
+        use std::fs;
+
+        let data = fs::read("Site/static/images/injector-sc.png")
+            .expect("Error reading test file");
+        let tokens = lz77_parse(&data);
+        let mut lit_freq = [0u32; 286];
+        let mut dist_freq = [0u32; 32];
+        lit_freq[256] = 1;
+        dist_freq[0] = 1;
+        for t in &tokens {
+            match *t {
+                Token::Literal(b) => lit_freq[b as usize] += 1,
+                Token::Match { length, distance } => {
+                    let (lsym, _, _) = length_code_and_bits(length);
+                    lit_freq[lsym] += 1;
+                    let (dsym, _, _) = distance_code_and_bits(distance);
+                    dist_freq[dsym] += 1;
+                }
+            }
+        }
+        let lit_lens = huffman_code_lengths(&lit_freq, 15).unwrap();
+        let dist_lens = huffman_code_lengths(&dist_freq, 15).unwrap();
+        let hlit = find_last_nonzero(&lit_lens).max(256) + 1;
+        let hdist = find_last_nonzero(&dist_lens).max(0) + 1;
+        let mut clens = build_clens(&lit_lens[..hlit], &dist_lens[..hdist]).unwrap();
+        let mut hcl_idx = 0;
+        for (i, &idx) in CODE_LENGTH_ORDER.iter().enumerate() { if clens[idx]!=0 { hcl_idx = i; } }
+        let hclen = hcl_idx.max(3) + 1;
+        for i in hclen..19 { clens[CODE_LENGTH_ORDER[i]] = 0; }
+        let cl_codes = gen_codes(&clens);
+        let lit_codes = gen_codes(&lit_lens);
+
+        let mut bw = BitWriter::new();
+        bw.write_bit(1); // BFINAL
+        bw.write_bits(2, 2); // BTYPE=10 dynamic
+        bw.write_bits((hlit - 257) as u32, 5);
+        bw.write_bits((hdist - 1) as u32, 5);
+        bw.write_bits((hclen - 4) as u32, 4);
+        for i in 0..hclen {
+            bw.write_bits(clens[CODE_LENGTH_ORDER[i]] as u32, 3);
+        }
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&lit_lens[..hlit]);
+        combined.extend_from_slice(&dist_lens[..hdist]);
+        rle_encode(&mut bw, &combined, &cl_codes);
+        // write EOB only
+        let (eob_code, eob_len) = lit_codes[256].unwrap();
+        bw.write_bits(eob_code, eob_len);
+        bw.align_byte();
+        let encoded = bw.finish();
+
+        let mut decoder = DeflateDecoder::new(&encoded[..]);
+        let mut out = Vec::new();
+        match decoder.decode(&mut out) {
+            Ok(()) => assert!(out.is_empty()),
+            Err(e) => panic!("decode: {}", e),
+        }
     }
 }
