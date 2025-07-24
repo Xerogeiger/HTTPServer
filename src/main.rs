@@ -14,10 +14,10 @@ fn main() {
     server.start().expect("Failed to start server");
 
     //Create an http 1.0 client
-    let client = V10.create_client(IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 1234);
+    let client = V11.create_client(IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 1234);
     match client {
         Ok(mut c) => {
-            c.get("/").expect("Failed to get");
+            c.get("/index.html").expect("Failed to get");
         },
         Err(e) => eprintln!("Failed to create client: {}", e),
     }
