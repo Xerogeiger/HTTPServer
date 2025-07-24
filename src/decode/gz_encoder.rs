@@ -205,9 +205,12 @@ impl DeflateEncoder {
             bw.write_bits(clens[CODE_LENGTH_ORDER[i]] as u32, 3);
         }
 
-        // 4) Encoded code lengths using RLE
-        rle_encode(&mut bw, &lit_lens[..hlit], &cl_codes);
-        rle_encode(&mut bw, &dist_lens[..hdist], &cl_codes);
+        // 4) Encoded code lengths using RLE over the combined sequence of
+        //    literal/length and distance lengths as required by RFC 1951.
+        let mut combined = Vec::with_capacity(hlit + hdist);
+        combined.extend_from_slice(&lit_lens[..hlit]);
+        combined.extend_from_slice(&dist_lens[..hdist]);
+        rle_encode(&mut bw, &combined, &cl_codes);
 
         // 5) Encode token stream
         for token in tokens {
