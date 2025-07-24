@@ -129,11 +129,25 @@ fn inflate_to_tokens(data: &[u8]) -> io::Result<Vec<Token>> {
                                 i+=1;
                             }
                             16 => {
+                                if i == 0 {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "Repeat code with no previous length",
+                                    ));
+                                }
                                 let rpt = br.read_bits(2)? as usize + 3;
-                                let prev = if i<hlit { lit_lens[i-1] } else { dist_lens[i-hlit-1] };
+                                let prev = if i < hlit {
+                                    lit_lens[i - 1]
+                                } else {
+                                    dist_lens[i - hlit - 1]
+                                };
                                 for _ in 0..rpt {
-                                    if i<hlit { lit_lens[i]=prev; } else { dist_lens[i-hlit]=prev; }
-                                    i+=1;
+                                    if i < hlit {
+                                        lit_lens[i] = prev;
+                                    } else {
+                                        dist_lens[i - hlit] = prev;
+                                    }
+                                    i += 1;
                                 }
                             }
                             17 => {
@@ -519,5 +533,14 @@ mod tests {
         let mut out = Vec::new();
         dec.read_to_end(&mut out).expect("flate2 decode");
         assert_eq!(&out, data);
+    }
+
+    #[test]
+    fn test_repeat_code_length_without_previous() {
+        // Craft dynamic block where the first code-length symbol is 16,
+        // which should result in an error instead of a panic.
+        let data = vec![0x05, 0x00, 0x02, 0x00];
+        let res = inflate_to_tokens(&data);
+        assert!(res.is_err());
     }
 }
