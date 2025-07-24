@@ -381,8 +381,9 @@ impl HttpServerClient for HttpV11ServerClient {
                 body = GzEncoder::new().encode(&body)
                     .map_err(|e| format!("Failed to gzip response body: {}", e))?;;
             }
-            response_text = format!("{}{}{}", status_line, headers, String::from_utf8_lossy(&body));
-            self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response: {}", e))?;
+            response_text = format!("{}{}", status_line, headers);
+            self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response header: {}", e))?;
+            self.reader.get_mut().write_all(&body).map_err(|e| format!("Failed to write response body: {}", e))?;
         }
 
         println!(
@@ -463,6 +464,9 @@ impl HttpServer for HttpV11Server {
         // Bind to the specified address and port
         let tcp_listener = TcpListener::bind((self.address, self.port))
             .map_err(|e| format!("Failed to bind to {}: {}: {}", self.address, self.port, e))?;
+        // Set the listener to non-blocking mode
+        tcp_listener.set_nonblocking(true)
+            .map_err(|e| format!("Failed to set non-blocking mode: {}", e))?;
         self.tcp_listener = Some(tcp_listener.try_clone().expect("Expected valid tcp listener"));
         self.clients.lock().unwrap().clear(); // Clear any existing clients
 
