@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, TcpStream};
 use crate::http::client::HttpClient;
 use crate::http::server::HttpServer;
 use crate::http::v10::http_v10::HttpV10Client;
-use crate::http::v11::http_v11::HttpV11Server;
+use crate::http::v11::http_v11::{HttpV11Client, HttpV11Server};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpVersion {
@@ -38,7 +38,7 @@ impl HttpVersion {
     pub fn create_client(&self, host: IpAddr, port: u16) -> Result<Box<dyn HttpClient>, String> {
         match self {
             HttpVersion::V10 => Ok(Box::new(HttpV10Client::new(host, port))),
-            HttpVersion::V11 => Err("HTTP/1.1 client not implemented".to_string()),
+            HttpVersion::V11 => Ok(Box::new(HttpV11Client::new(host, port))),
             HttpVersion::V2 => Err("HTTP/2 client not implemented".to_string()),
             HttpVersion::V3 => Err("HTTP/3 client not implemented".to_string()),
         }
