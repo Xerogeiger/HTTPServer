@@ -190,6 +190,9 @@ impl DeflateEncoder {
         let hclen = find_last_nonzero(&clens).max(3) + 1;
         let cl_codes = gen_codes(&clens);
 
+        // debug print HLIT/HDIST/HCLEN fields
+        println!("HLIT={} HDIST={} HCLEN={}", hlit, hdist, hclen);
+
         // code tables for actual data
         let lit_codes = gen_codes(&lit_lens);
         let dist_codes = gen_codes(&dist_lens);
@@ -210,7 +213,8 @@ impl DeflateEncoder {
         let mut combined = Vec::with_capacity(hlit + hdist);
         combined.extend_from_slice(&lit_lens[..hlit]);
         combined.extend_from_slice(&dist_lens[..hdist]);
-        rle_encode(&mut bw, &combined, &cl_codes);
+        let rle_seq = rle_encode(&mut bw, &combined, &cl_codes);
+        println!("RLE output: {:?}", rle_seq);
 
         // 5) Encode token stream
         for token in tokens {
@@ -500,7 +504,12 @@ fn build_clens(lit_lens: &[u8], dist_lens: &[u8]) -> io::Result<Vec<u8>> {
 
 /// Run-length encode a sequence of code lengths and write to BitWriter
 /// lens: array of code lengths (literal/length or distance)
-fn rle_encode(bw: &mut BitWriter, lens: &[u8], codes: &[Option<(u32, u8)>]) {
+fn rle_encode(
+    bw: &mut BitWriter,
+    lens: &[u8],
+    codes: &[Option<(u32, u8)>],
+) -> Vec<u8> {
+    let mut debug_seq = Vec::new();
     let mut i = 0;
     while i < lens.len() {
         let val = lens[i];
@@ -516,6 +525,7 @@ fn rle_encode(bw: &mut BitWriter, lens: &[u8], codes: &[Option<(u32, u8)>]) {
                 let (code, len) = codes[18].unwrap();
                 bw.write_bits(code, len);
                 bw.write_bits((chunk - 11) as u32, 7);
+                debug_seq.push(18);
                 r -= chunk;
             }
             if r >= 3 {
@@ -523,33 +533,38 @@ fn rle_encode(bw: &mut BitWriter, lens: &[u8], codes: &[Option<(u32, u8)>]) {
                 let (code, len) = codes[17].unwrap();
                 bw.write_bits(code, len);
                 bw.write_bits((chunk - 3) as u32, 3);
+                debug_seq.push(17);
                 r -= chunk;
             }
             for _ in 0..r {
                 let (code, len) = codes[0].unwrap();
                 bw.write_bits(code, len);
+                debug_seq.push(0);
             }
         } else {
             // non-zeros: code val,16
             let mut r = run;
-            // first occurrence
             let (code, clen) = codes[val as usize].unwrap();
             bw.write_bits(code, clen);
+            debug_seq.push(val);
             r -= 1;
             while r >= 3 {
                 let chunk = r.min(6);
                 let (code16, len16) = codes[16].unwrap();
                 bw.write_bits(code16, len16);
                 bw.write_bits((chunk - 3) as u32, 2);
+                debug_seq.push(16);
                 r -= chunk;
             }
             for _ in 0..r {
                 let (code, clen) = codes[val as usize].unwrap();
                 bw.write_bits(code, clen);
+                debug_seq.push(val);
             }
         }
         i += run;
     }
+    debug_seq
 }
 
 /// Compute CRC32 for GZip trailer (using runtime-generated table)
