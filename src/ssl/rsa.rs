@@ -1,5 +1,6 @@
 use crate::ssl::bigint::BigUint;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::rng::{fill_secure_random};
+use std::io;
 
 /// RSA public key (n, e)
 pub struct RsaPublicKey {
@@ -27,6 +28,16 @@ fn random_nonzero_bytes(len: usize, seed: &mut u64) -> Vec<u8> {
     out
 }
 
+fn random_nonzero_bytes_secure(len: usize) -> io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(len);
+    while out.len() < len {
+        let mut b = [0u8; 1];
+        fill_secure_random(&mut b)?;
+        if b[0] != 0 { out.push(b[0]); }
+    }
+    Ok(out)
+}
+
 impl RsaPublicKey {
     pub fn new(n: BigUint, e: BigUint) -> Self { Self { n, e } }
 
@@ -52,10 +63,23 @@ impl RsaPublicKey {
         Ok(out)
     }
 
-    /// Encrypt using PKCS#1 v1.5 padding with a time-based seed.
+    /// Encrypt using PKCS#1 v1.5 padding pulling randomness from the OS.
     pub fn encrypt_pkcs1_v1_5(&self, msg: &[u8]) -> Result<Vec<u8>, String> {
-        let mut seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
-        self.encrypt_pkcs1_v1_5_with_seed(msg, &mut seed)
+        let k = self.n.to_bytes_be().len();
+        if msg.len() > k - 11 { return Err("message too long".into()); }
+        let ps = random_nonzero_bytes_secure(k - msg.len() - 3)
+            .map_err(|e| e.to_string())?;
+        let mut em = Vec::with_capacity(k);
+        em.push(0);
+        em.push(0x02);
+        em.extend_from_slice(&ps);
+        em.push(0);
+        em.extend_from_slice(msg);
+        let m = BigUint::from_bytes_be(&em);
+        let c = m.modpow(&self.e, &self.n);
+        let mut out = c.to_bytes_be();
+        if out.len() < k { let mut pad = vec![0u8; k - out.len()]; pad.extend_from_slice(&out); out = pad; }
+        Ok(out)
     }
 }
 
