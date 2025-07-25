@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 use http::shared::HttpVersion::V11;
-use crate::http::server::dir_to_mappings;
+use crate::http::server::{dir_to_mappings, TlsConfig};
 mod http;
 mod decode;
 mod ssl;
@@ -10,16 +10,11 @@ fn main() {
     //Create an http 1.1 server on a new thread
     server.add_mappings(dir_to_mappings("./Site/static/", None).expect("Failed to create mappings")).expect("Failed to add mappings");
     server.add_mappings(dir_to_mappings("./Site/templates/", None).expect("Failed to create mappings")).expect("Failed to add mappings");
-    server.start().expect("Failed to start server");
 
-    //Create an http 1.0 client
-    let client = V11.create_client(IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 1234);
-    match client {
-        Ok(mut c) => {
-            c.get("/index.html").expect("Failed to get");
-        },
-        Err(e) => eprintln!("Failed to create client: {}", e),
-    }
+    let cert = include_bytes!("../tests/test.cer").to_vec();
+    server.enable_tls(TlsConfig { cert, key: vec![], ciphers: vec![] }).expect("Failed to enable TLS");
+
+    server.start().expect("Failed to start server");
 
     loop {
         // Wait for user input to exit

@@ -7,6 +7,14 @@ pub enum ServerStatus {
     Running,
     Stopped
 }
+
+#[derive(Clone)]
+pub struct TlsConfig {
+    pub cert: Vec<u8>,
+    pub key: Vec<u8>,
+    pub ciphers: Vec<String>,
+}
+
 impl Clone for ServerStatus {
     fn clone(&self) -> Self {
         match self {
@@ -16,6 +24,7 @@ impl Clone for ServerStatus {
         }
     }
 }
+
 impl PartialEq for ServerStatus {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -157,6 +166,7 @@ pub trait HttpServer {
         }
         Ok(())
     }
+    fn enable_tls(&mut self, config: TlsConfig) -> Result<(), String>;
 }
 
 pub trait HttpServerClient {

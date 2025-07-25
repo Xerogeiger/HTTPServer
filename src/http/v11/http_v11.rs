@@ -1,7 +1,7 @@
 use crate::decode::gz_decoder::GzDecoder;
 use crate::decode::gz_encoder::GzEncoder;
 use crate::http::client::HttpClient;
-use crate::http::server::HttpServer;
+use crate::http::server::{HttpServer, TlsConfig};
 use crate::http::server::HttpServerClient;
 use crate::http::server::{HttpMapping, ServerStatus};
 use crate::http::shared::ContentType::TextPlain;
@@ -16,13 +16,6 @@ use std::io::{BufRead, BufReader, Error, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-#[derive(Clone)]
-pub struct TlsConfig {
-    pub cert: Vec<u8>,
-    pub key: Vec<u8>,
-    pub ciphers: Vec<String>,
-}
 
 pub struct HttpV11Client {
     host: IpAddr,
@@ -619,6 +612,11 @@ impl HttpServer for HttpV11Server {
         mappings.push(mapping);
         Ok(())
     }
+
+    fn enable_tls(&mut self, config: TlsConfig) -> Result<(), String> {
+        self.tls_config = Some(config);
+        Ok(())
+    }
 }
 
 impl HttpV11Server {
@@ -633,10 +631,6 @@ impl HttpV11Server {
             server_thread: None,
             tls_config: None,
         }
-    }
-
-    pub fn enable_tls(&mut self, config: TlsConfig) {
-        self.tls_config = Some(config);
     }
 }
 
