@@ -5,15 +5,27 @@ pub struct AesCipher {
     round_keys: Vec<[u8; 16]>,
 }
 
+impl Clone for AesCipher {
+    fn clone(&self) -> Self {
+        AesCipher {
+            round_keys: self.round_keys.clone(),
+        }
+    }
+}
+
 impl AesCipher {
     /// Create AES cipher with a 128-bit key
     pub fn new_128(key: &[u8; 16]) -> Self {
-        AesCipher { round_keys: expand_key(key, 4, 10) }
+        AesCipher {
+            round_keys: expand_key(key, 4, 10),
+        }
     }
 
     /// Create AES cipher with a 256-bit key
     pub fn new_256(key: &[u8; 32]) -> Self {
-        AesCipher { round_keys: expand_key(key, 8, 14) }
+        AesCipher {
+            round_keys: expand_key(key, 8, 14),
+        }
     }
 
     /// Encrypt a single 16-byte block
@@ -48,11 +60,13 @@ impl AesCipher {
 
     /// Decrypt data in CBC mode with PKCS7 padding
     pub fn decrypt_cbc(&self, data: &[u8], iv: &[u8; 16]) -> Option<Vec<u8>> {
-        if data.len() % 16 != 0 { return None; }
+        if data.len() % 16 != 0 {
+            return None;
+        }
         let mut prev = *iv;
         let mut out = Vec::with_capacity(data.len());
         for chunk in data.chunks(16) {
-            let block: [u8;16] = chunk.try_into().unwrap();
+            let block: [u8; 16] = chunk.try_into().unwrap();
             let mut decrypted = decrypt_block(block, &self.round_keys);
             for i in 0..16 {
                 decrypted[i] ^= prev[i];
@@ -60,13 +74,20 @@ impl AesCipher {
             out.extend_from_slice(&decrypted);
             prev = block;
         }
-        if out.is_empty() { return Some(out); }
+        if out.is_empty() {
+            return Some(out);
+        }
         let pad_len = *out.last().unwrap() as usize;
-        if pad_len == 0 || pad_len > 16 { return None; }
-        if out[out.len()-pad_len..].iter().any(|&b| b as usize != pad_len) {
+        if pad_len == 0 || pad_len > 16 {
             return None;
         }
-        out.truncate(out.len()-pad_len);
+        if out[out.len() - pad_len..]
+            .iter()
+            .any(|&b| b as usize != pad_len)
+        {
+            return None;
+        }
+        out.truncate(out.len() - pad_len);
         Some(out)
     }
 
@@ -76,9 +97,11 @@ impl AesCipher {
         let mut prev = *iv;
         let mut out = Vec::with_capacity(data.len());
         for chunk in data.chunks(16) {
-            let block: [u8;16] = chunk.try_into().unwrap();
+            let block: [u8; 16] = chunk.try_into().unwrap();
             let mut decrypted = decrypt_block(block, &self.round_keys);
-            for i in 0..16 { decrypted[i] ^= prev[i]; }
+            for i in 0..16 {
+                decrypted[i] ^= prev[i];
+            }
             out.extend_from_slice(&decrypted);
             prev = block;
         }
@@ -91,8 +114,10 @@ impl AesCipher {
         let mut prev = *iv;
         let mut out = Vec::with_capacity(data.len());
         for chunk in data.chunks(16) {
-            let mut block = [0u8;16];
-            for i in 0..16 { block[i] = chunk[i] ^ prev[i]; }
+            let mut block = [0u8; 16];
+            for i in 0..16 {
+                block[i] = chunk[i] ^ prev[i];
+            }
             block = encrypt_block(block, &self.round_keys);
             out.extend_from_slice(&block);
             prev = block;
@@ -142,9 +167,7 @@ const INV_SBOX: [u8; 256] = [
 ];
 
 // Round constants for key expansion
-const RCON: [u8; 10] = [
-    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36,
-];
+const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
 
 fn sub_word(w: u32) -> u32 {
     let bytes = w.to_be_bytes();
@@ -156,7 +179,9 @@ fn sub_word(w: u32) -> u32 {
     ])
 }
 
-fn rot_word(w: u32) -> u32 { w.rotate_left(8) }
+fn rot_word(w: u32) -> u32 {
+    w.rotate_left(8)
+}
 
 fn expand_key(key: &[u8], nk: usize, nr: usize) -> Vec<[u8; 16]> {
     let nb = 4;
@@ -185,42 +210,70 @@ fn expand_key(key: &[u8], nk: usize, nr: usize) -> Vec<[u8; 16]> {
 }
 
 fn add_round_key(state: &mut [u8; 16], key: &[u8; 16]) {
-    for i in 0..16 { state[i] ^= key[i]; }
+    for i in 0..16 {
+        state[i] ^= key[i];
+    }
 }
 
 fn sub_bytes(state: &mut [u8; 16]) {
-    for b in state.iter_mut() { *b = SBOX[*b as usize]; }
+    for b in state.iter_mut() {
+        *b = SBOX[*b as usize];
+    }
 }
 
 fn inv_sub_bytes(state: &mut [u8; 16]) {
-    for b in state.iter_mut() { *b = INV_SBOX[*b as usize]; }
+    for b in state.iter_mut() {
+        *b = INV_SBOX[*b as usize];
+    }
 }
 
 fn shift_rows(state: &mut [u8; 16]) {
     let tmp = [state[1], state[5], state[9], state[13]];
-    state[1] = tmp[1]; state[5] = tmp[2]; state[9] = tmp[3]; state[13] = tmp[0];
+    state[1] = tmp[1];
+    state[5] = tmp[2];
+    state[9] = tmp[3];
+    state[13] = tmp[0];
     let tmp = [state[2], state[6], state[10], state[14]];
-    state[2] = tmp[2]; state[6] = tmp[3]; state[10]= tmp[0]; state[14]= tmp[1];
+    state[2] = tmp[2];
+    state[6] = tmp[3];
+    state[10] = tmp[0];
+    state[14] = tmp[1];
     let tmp = [state[3], state[7], state[11], state[15]];
-    state[3] = tmp[3]; state[7] = tmp[0]; state[11]= tmp[1]; state[15]= tmp[2];
+    state[3] = tmp[3];
+    state[7] = tmp[0];
+    state[11] = tmp[1];
+    state[15] = tmp[2];
 }
 
 fn inv_shift_rows(state: &mut [u8; 16]) {
     let tmp = [state[1], state[5], state[9], state[13]];
-    state[1] = tmp[3]; state[5] = tmp[0]; state[9]=tmp[1]; state[13]=tmp[2];
+    state[1] = tmp[3];
+    state[5] = tmp[0];
+    state[9] = tmp[1];
+    state[13] = tmp[2];
     let tmp = [state[2], state[6], state[10], state[14]];
-    state[2] = tmp[2]; state[6]=tmp[3]; state[10]=tmp[0]; state[14]=tmp[1];
+    state[2] = tmp[2];
+    state[6] = tmp[3];
+    state[10] = tmp[0];
+    state[14] = tmp[1];
     let tmp = [state[3], state[7], state[11], state[15]];
-    state[3] = tmp[1]; state[7]=tmp[2]; state[11]=tmp[3]; state[15]=tmp[0];
+    state[3] = tmp[1];
+    state[7] = tmp[2];
+    state[11] = tmp[3];
+    state[15] = tmp[0];
 }
 
 fn gmul(mut a: u8, mut b: u8) -> u8 {
     let mut p = 0u8;
     for _ in 0..8 {
-        if b & 1 != 0 { p ^= a; }
+        if b & 1 != 0 {
+            p ^= a;
+        }
         let hi = a & 0x80;
         a <<= 1;
-        if hi != 0 { a ^= 0x1b; }
+        if hi != 0 {
+            a ^= 0x1b;
+        }
         b >>= 1;
     }
     p
@@ -228,27 +281,37 @@ fn gmul(mut a: u8, mut b: u8) -> u8 {
 
 fn mix_columns(state: &mut [u8; 16]) {
     for c in 0..4 {
-        let col = [state[c*4], state[c*4+1], state[c*4+2], state[c*4+3]];
-        state[c*4]   = gmul(col[0],2) ^ gmul(col[1],3) ^ col[2] ^ col[3];
-        state[c*4+1] = col[0] ^ gmul(col[1],2) ^ gmul(col[2],3) ^ col[3];
-        state[c*4+2] = col[0] ^ col[1] ^ gmul(col[2],2) ^ gmul(col[3],3);
-        state[c*4+3] = gmul(col[0],3) ^ col[1] ^ col[2] ^ gmul(col[3],2);
+        let col = [
+            state[c * 4],
+            state[c * 4 + 1],
+            state[c * 4 + 2],
+            state[c * 4 + 3],
+        ];
+        state[c * 4] = gmul(col[0], 2) ^ gmul(col[1], 3) ^ col[2] ^ col[3];
+        state[c * 4 + 1] = col[0] ^ gmul(col[1], 2) ^ gmul(col[2], 3) ^ col[3];
+        state[c * 4 + 2] = col[0] ^ col[1] ^ gmul(col[2], 2) ^ gmul(col[3], 3);
+        state[c * 4 + 3] = gmul(col[0], 3) ^ col[1] ^ col[2] ^ gmul(col[3], 2);
     }
 }
 
 fn inv_mix_columns(state: &mut [u8; 16]) {
     for c in 0..4 {
-        let col = [state[c*4], state[c*4+1], state[c*4+2], state[c*4+3]];
-        state[c*4]   = gmul(col[0],14) ^ gmul(col[1],11) ^ gmul(col[2],13) ^ gmul(col[3],9);
-        state[c*4+1] = gmul(col[0],9)  ^ gmul(col[1],14) ^ gmul(col[2],11) ^ gmul(col[3],13);
-        state[c*4+2] = gmul(col[0],13) ^ gmul(col[1],9)  ^ gmul(col[2],14) ^ gmul(col[3],11);
-        state[c*4+3] = gmul(col[0],11) ^ gmul(col[1],13) ^ gmul(col[2],9)  ^ gmul(col[3],14);
+        let col = [
+            state[c * 4],
+            state[c * 4 + 1],
+            state[c * 4 + 2],
+            state[c * 4 + 3],
+        ];
+        state[c * 4] = gmul(col[0], 14) ^ gmul(col[1], 11) ^ gmul(col[2], 13) ^ gmul(col[3], 9);
+        state[c * 4 + 1] = gmul(col[0], 9) ^ gmul(col[1], 14) ^ gmul(col[2], 11) ^ gmul(col[3], 13);
+        state[c * 4 + 2] = gmul(col[0], 13) ^ gmul(col[1], 9) ^ gmul(col[2], 14) ^ gmul(col[3], 11);
+        state[c * 4 + 3] = gmul(col[0], 11) ^ gmul(col[1], 13) ^ gmul(col[2], 9) ^ gmul(col[3], 14);
     }
 }
 
 fn encrypt_block(mut block: [u8; 16], round_keys: &[[u8; 16]]) -> [u8; 16] {
     add_round_key(&mut block, &round_keys[0]);
-    for rk in round_keys.iter().skip(1).take(round_keys.len()-2) {
+    for rk in round_keys.iter().skip(1).take(round_keys.len() - 2) {
         sub_bytes(&mut block);
         shift_rows(&mut block);
         mix_columns(&mut block);
@@ -262,7 +325,7 @@ fn encrypt_block(mut block: [u8; 16], round_keys: &[[u8; 16]]) -> [u8; 16] {
 
 fn decrypt_block(mut block: [u8; 16], round_keys: &[[u8; 16]]) -> [u8; 16] {
     add_round_key(&mut block, round_keys.last().unwrap());
-    for rk in round_keys.iter().rev().skip(1).take(round_keys.len()-2) {
+    for rk in round_keys.iter().rev().skip(1).take(round_keys.len() - 2) {
         inv_shift_rows(&mut block);
         inv_sub_bytes(&mut block);
         add_round_key(&mut block, rk);
@@ -289,7 +352,7 @@ mod tests {
     fn aes128_cbc_nist_example() {
         let key = hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c");
         let iv = hex_to_bytes("000102030405060708090a0b0c0d0e0f");
-        let iv_arr: [u8;16] = iv.clone().try_into().unwrap();
+        let iv_arr: [u8; 16] = iv.clone().try_into().unwrap();
         let pt = hex_to_bytes(
             "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
         );
@@ -305,11 +368,9 @@ mod tests {
 
     #[test]
     fn aes256_cbc_nist_example() {
-        let key = hex_to_bytes(
-            "603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4",
-        );
+        let key = hex_to_bytes("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4");
         let iv = hex_to_bytes("000102030405060708090a0b0c0d0e0f");
-        let iv_arr: [u8;16] = iv.clone().try_into().unwrap();
+        let iv_arr: [u8; 16] = iv.clone().try_into().unwrap();
         let pt = hex_to_bytes(
             "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
         );
@@ -323,4 +384,3 @@ mod tests {
         assert_eq!(dec, pt);
     }
 }
-
