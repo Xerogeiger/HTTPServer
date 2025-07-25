@@ -188,10 +188,9 @@ impl BigUint {
     /// Modular exponentiation: self^exp mod m.
     pub fn modpow(&self, exp: &BigUint, m: &BigUint) -> BigUint {
         let mut result = BigUint::from_bytes_be(&[1]);
-        let mut base = self.clone();
-        for &digit in exp.0.iter().rev() {
+        let base = self.rem(m);
+        for &digit in exp.0.iter() {
             for i in (0..32).rev() {
-                // square
                 result = result.mul_mod(&result, m);
                 if (digit >> i) & 1 == 1 {
                     result = result.mul_mod(&base, m);

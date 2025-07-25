@@ -5,3 +5,4 @@ mod x509;
 mod state;
 mod bigint;
 mod aes;
+mod rsa;
