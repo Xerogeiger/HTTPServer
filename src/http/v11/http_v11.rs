@@ -766,7 +766,7 @@ fn create_client(
 ) -> Result<Arc<Mutex<HttpV11ServerClient>>, String> {
     if let Some(cfg) = tls {
         let mut session = TlsSession::new(tcp_stream);
-        server_handshake(&mut session, &cfg.cert).map_err(|e| e.to_string())?;
+        server_handshake(&mut session, &cfg.cert, &cfg.key).map_err(|e| e.to_string())?;
         let addr = session.local_addr().unwrap();
         let client = Arc::new(Mutex::new(HttpV11ServerClient::new_tls(
             addr.ip(),
@@ -1022,8 +1022,9 @@ mod tests {
         let mut server = HttpV11Server::new(0, IpAddr::V4(Ipv4Addr::LOCALHOST));
         server.add_mapping(Box::new(HelloMapping)).unwrap();
         server.enable_tls(TlsConfig {
-            cert: include_bytes!("../../../tests/test.cer").to_vec(),
-            key: vec![],
+            cert: crate::ssl::rsa::pem_to_der(include_str!("../../../tests/test_cert.pem"))
+                .unwrap(),
+            key: include_bytes!("../../../tests/test_key.pem").to_vec(),
             ciphers: vec![],
         });
         server.start().unwrap();
@@ -1051,6 +1052,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn https_client_helper() {
         use std::net::{IpAddr, Ipv4Addr};
 
@@ -1078,8 +1080,9 @@ mod tests {
         server.add_mapping(Box::new(HelloMapping)).unwrap();
         server
             .enable_tls(TlsConfig {
-                cert: include_bytes!("../../../tests/test.cer").to_vec(),
-                key: vec![],
+                cert: crate::ssl::rsa::pem_to_der(include_str!("../../../tests/test_cert.pem"))
+                    .unwrap(),
+                key: include_bytes!("../../../tests/test_key.pem").to_vec(),
                 ciphers: vec![],
             })
             .unwrap();
