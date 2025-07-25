@@ -1,17 +1,28 @@
-use std::io;
-use std::io::{BufRead, BufReader, Error, Read, Write};
-use std::net::{IpAddr, TcpListener, TcpStream};
-use crate::http::server::{HttpMapping, ServerStatus};
-use crate::http::server::HttpServer;
-use crate::http::server::{HttpServerClient};
-use crate::http::shared::{write_chunked, HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
-use crate::http::shared::RequestMethod::Get;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use crate::decode::gz_decoder::GzDecoder;
 use crate::decode::gz_encoder::GzEncoder;
 use crate::http::client::HttpClient;
+use crate::http::server::HttpServer;
+use crate::http::server::HttpServerClient;
+use crate::http::server::{HttpMapping, ServerStatus};
 use crate::http::shared::ContentType::TextPlain;
+use crate::http::shared::RequestMethod::Get;
+use crate::http::shared::{
+    write_chunked, HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode,
+};
+use crate::ssl::handshake_state::server_handshake;
+use crate::ssl::state::TlsSession;
+use std::io;
+use std::io::{BufRead, BufReader, Error, Read, Write};
+use std::net::{IpAddr, TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+#[derive(Clone)]
+pub struct TlsConfig {
+    pub cert: Vec<u8>,
+    pub key: Vec<u8>,
+    pub ciphers: Vec<String>,
+}
 
 pub struct HttpV11Client {
     host: IpAddr,
@@ -124,11 +135,11 @@ impl HttpClient for HttpV11Client {
         }
 
         if self.stream.is_none() {
-            self.ensure_connection()
-                .map_err(|e| e.to_string())?;
+            self.ensure_connection().map_err(|e| e.to_string())?;
         }
 
-        let mut stream = self.stream
+        let mut stream = self
+            .stream
             .take()
             .expect("stream was just set so this is safe");
 
@@ -146,7 +157,9 @@ impl HttpClient for HttpV11Client {
         let mut reader = BufReader::new(stream);
         // 1) Status line
         let mut status_line = String::new();
-        reader.read_line(&mut status_line).map_err(|e| e.to_string())?;
+        reader
+            .read_line(&mut status_line)
+            .map_err(|e| e.to_string())?;
         let mut parts = status_line.trim_end().splitn(3, ' ');
         let _version = parts.next().ok_or("Malformed status line")?;
         let code: u16 = parts
@@ -184,26 +197,28 @@ impl HttpClient for HttpV11Client {
 
         // 3) Body
         let mut body_bytes = Vec::new();
-        let is_chunked = headers
-            .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") &&
-                v.eq_ignore_ascii_case("chunked"));
-        let is_gzip = headers
-            .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("content-encoding") &&
-                v.eq_ignore_ascii_case("gzip"));
+        let is_chunked = headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("transfer-encoding") && v.eq_ignore_ascii_case("chunked")
+        });
+        let is_gzip = headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("content-encoding") && v.eq_ignore_ascii_case("gzip")
+        });
         if is_chunked {
-            body_bytes = HttpV11Client::read_chunked_body(&mut reader).map_err(|e| e.to_string())?;
+            body_bytes =
+                HttpV11Client::read_chunked_body(&mut reader).map_err(|e| e.to_string())?;
         } else if let Some((_, v)) = headers
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("content-length")) {
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        {
             let len: usize = v.parse().map_err(|_| "Invalid Content-Length")?;
             let mut buf = vec![0; len];
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
             body_bytes = buf;
         } else {
             // read until EOF
-            reader.read_to_end(&mut body_bytes).map_err(|e| e.to_string())?;
+            reader
+                .read_to_end(&mut body_bytes)
+                .map_err(|e| e.to_string())?;
         }
 
         // 4) Handle gzip
@@ -214,194 +229,217 @@ impl HttpClient for HttpV11Client {
             final_body = decompressed.unwrap();
         }
 
-        Ok(HttpResponse::new(HttpStatus::new(code, reason), headers, Some(final_body)))
+        Ok(HttpResponse::new(
+            HttpStatus::new(code, reason),
+            headers,
+            Some(final_body),
+        ))
     }
+}
+
+enum Connection {
+    Plain(BufReader<TcpStream>),
+    Tls(BufReader<TlsSession>),
 }
 
 struct HttpV11ServerClient {
     ip_address: IpAddr,
-    stream: TcpStream,
-    reader: BufReader<TcpStream>,
     port: u16,
     connected: bool,
+    connection: Connection,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Clone for HttpV11ServerClient {
     fn clone(&self) -> Self {
-        let stream_clone = self.stream.try_clone().expect("Failed to clone stream");
-        let reader = BufReader::new(stream_clone.try_clone().expect("Failed to clone stream"));
+        let connection = match &self.connection {
+            Connection::Plain(reader) => {
+                let stream_clone = reader
+                    .get_ref()
+                    .try_clone()
+                    .expect("Failed to clone stream");
+                Connection::Plain(BufReader::new(stream_clone))
+            }
+            Connection::Tls(reader) => {
+                let session_clone = reader.get_ref().clone();
+                Connection::Tls(BufReader::new(session_clone))
+            }
+        };
         HttpV11ServerClient {
             ip_address: self.ip_address,
-            stream: stream_clone,
-            reader,
             port: self.port,
             connected: self.connected,
+            connection,
             thread: None,
         }
     }
 }
 
+fn read_request<R: BufRead>(reader: &mut R) -> Result<Option<HttpRequest>, String> {
+    let mut request_line = String::new();
+    match reader.read_line(&mut request_line) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {}
+        Err(e) => return Err(format!("Failed to read request line: {}", e)),
+    }
+    let request_line = request_line.trim_end();
+    if request_line.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = request_line.split_whitespace();
+    let method_str = parts.next().ok_or("Missing request method")?;
+    let path = parts.next().ok_or("Missing request path")?;
+    let version = parts.next().ok_or("Missing HTTP version")?;
+    if !version.eq_ignore_ascii_case("HTTP/1.1") && !version.eq_ignore_ascii_case("HTTP/1.0") {
+        return Err(format!("Unsupported HTTP version: {}", version));
+    }
+    let method = RequestMethod::from_str(method_str)
+        .ok_or_else(|| format!("Unsupported HTTP method: {}", method_str))?;
+    let mut headers = Vec::new();
+    let mut body = None;
+    loop {
+        let mut header_line = String::new();
+        match reader.read_line(&mut header_line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => return Err(format!("Failed to read header line: {}", e)),
+        }
+        let header_line = header_line.trim_end();
+        if header_line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = header_line.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        } else {
+            return Err(format!("Invalid header format: {}", header_line));
+        }
+    }
+    if let Some(cl) = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
+        .and_then(|(_, v)| v.parse::<usize>().ok())
+    {
+        let mut body_bytes = vec![0; cl];
+        reader
+            .read_exact(&mut body_bytes)
+            .map_err(|e| format!("Failed to read request body: {}", e))?;
+        body = Some(body_bytes);
+    } else if headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("Transfer-Encoding") && v.eq_ignore_ascii_case("chunked")
+    }) {
+        let mut body_bytes = Vec::new();
+        loop {
+            let mut size_line = String::new();
+            reader
+                .read_line(&mut size_line)
+                .map_err(|e| format!("Failed to read chunk size: {}", e))?;
+            let size = usize::from_str_radix(size_line.trim_end(), 16)
+                .map_err(|_| "Invalid chunk size".to_string())?;
+            if size == 0 {
+                break;
+            }
+            let mut chunk = vec![0; size];
+            reader
+                .read_exact(&mut chunk)
+                .map_err(|e| format!("Failed to read chunk data: {}", e))?;
+            body_bytes.extend_from_slice(&chunk);
+            let mut crlf = [0; 2];
+            reader
+                .read_exact(&mut crlf)
+                .map_err(|e| format!("Failed to read trailing CRLF: {}", e))?;
+        }
+        body = Some(body_bytes);
+    }
+    Ok(Some(HttpRequest::new(
+        method,
+        path.to_string(),
+        headers,
+        body,
+    )))
+}
+
+fn write_response<W: Write>(mut writer: W, mut response: HttpResponse) -> Result<(), String> {
+    response
+        .headers
+        .push(("Connection".into(), "keep-alive".into()));
+    let chunked = !response.body.is_none() && response.body.as_ref().map_or(0, |b| b.len()) > 1024;
+    let is_gzip = response
+        .headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("Content-Encoding") && v.eq_ignore_ascii_case("gzip"));
+    if chunked {
+        response
+            .headers
+            .push(("Transfer-Encoding".into(), "chunked".into()));
+    } else {
+        let len = response.body.as_ref().map_or(0, |b| b.len());
+        response
+            .headers
+            .push(("Content-Length".into(), len.to_string()));
+    }
+    let status_line = format!(
+        "HTTP/1.1 {} {}\r\n",
+        response.status.code, response.status.text
+    );
+    let mut headers = String::new();
+    for (k, v) in &response.headers {
+        headers.push_str(&format!("{}: {}\r\n", k, v));
+    }
+    headers.push_str("\r\n");
+    let mut body = response.body.clone().unwrap_or_default();
+    if is_gzip {
+        body = GzEncoder::new()
+            .encode(&body)
+            .map_err(|e| format!("Failed to gzip response body: {}", e))?;
+    }
+    writer
+        .write_all(status_line.as_bytes())
+        .map_err(|e| format!("Failed to write response header: {}", e))?;
+    writer
+        .write_all(headers.as_bytes())
+        .map_err(|e| format!("Failed to write headers: {}", e))?;
+    if chunked {
+        write_chunked(&mut writer, &body)
+            .map_err(|e| format!("Failed to write chunked response: {}", e))?;
+    } else {
+        writer
+            .write_all(&body)
+            .map_err(|e| format!("Failed to write response body: {}", e))?;
+    }
+    Ok(())
+}
+
 impl HttpServerClient for HttpV11ServerClient {
     fn receive_request(&mut self) -> Result<Option<HttpRequest>, String> {
-        // Implementation for receiving an HTTP request
         if !self.connected {
-            return Err("Client is not connected".to_string());
+            return Err("Client is not connected".into());
         }
-
-        let reader = &mut self.reader;
-        let mut request_line = String::new();
-        match reader.read_line(&mut request_line) {
-            Ok(0) => return Ok(None), // EOF, no request
-            Ok(_) => {}
-            Err(e) => return Err(format!("Failed to read request line: {}", e)),
+        match &mut self.connection {
+            Connection::Plain(r) => read_request(r),
+            Connection::Tls(r) => read_request(r),
         }
-
-        let request_line = request_line.trim_end();
-        if request_line.is_empty() {
-            return Ok(None); // No request received
-        }
-
-        let mut parts = request_line.split_whitespace();
-        let method_str = parts.next().ok_or("Missing request method")?;
-        let path = parts.next().ok_or("Missing request path")?;
-        let version = parts.next().ok_or("Missing HTTP version")?;
-
-        if !version.eq_ignore_ascii_case("HTTP/1.1") && !version.eq_ignore_ascii_case("HTTP/1.0") {
-            return Err(format!("Unsupported HTTP version: {}", version));
-        }
-
-        let method = RequestMethod::from_str(method_str);
-        if method.is_none() {
-            return Err(format!("Unsupported HTTP method: {}", method_str));
-        }
-
-        let method = method.unwrap();
-        let mut headers = Vec::new();
-        let mut body: Option<Vec<u8>> = None;
-
-        // Read headers
-        loop {
-            let mut header_line = String::new();
-            match reader.read_line(&mut header_line) {
-                Ok(0) => break, // EOF, no more headers
-                Ok(_) => {}
-                Err(e) => return Err(format!("Failed to read header line: {}", e)),
-            }
-            let header_line = header_line.trim_end();
-            if header_line.is_empty() {
-                break; // End of headers
-            }
-            if let Some((key, value)) = header_line.split_once(':') {
-                headers.push((key.trim().to_string(), value.trim().to_string()));
-            } else {
-                return Err(format!("Invalid header format: {}", header_line));
-            }
-        }
-
-        // Read body if present
-        if let Some(content_length) = headers.iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
-            .and_then(|(_, v)| v.parse::<usize>().ok()) {
-            let mut body_bytes = vec![0; content_length];
-            reader.read_exact(&mut body_bytes)
-                .map_err(|e| format!("Failed to read request body: {}", e))?;
-            body = Some(body_bytes);
-        } else if headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("Transfer-Encoding") && v.eq_ignore_ascii_case("chunked")) {
-            // Handle chunked transfer encoding
-            let mut body_bytes = Vec::new();
-            loop {
-                let mut size_line = String::new();
-                reader.read_line(&mut size_line)
-                    .map_err(|e| format!("Failed to read chunk size: {}", e))?;
-                let size = usize::from_str_radix(size_line.trim_end(), 16)
-                    .map_err(|_| "Invalid chunk size".to_string())?;
-                if size == 0 {
-                    break; // End of chunks
-                }
-                let mut chunk = vec![0; size];
-                reader.read_exact(&mut chunk)
-                    .map_err(|e| format!("Failed to read chunk data: {}", e))?;
-                body_bytes.extend_from_slice(&chunk);
-                // Read the trailing CRLF
-                let mut crlf = [0; 2];
-                reader.read_exact(&mut crlf)
-                    .map_err(|e| format!("Failed to read trailing CRLF: {}", e))?;
-            }
-            body = Some(body_bytes);
-        }
-
-        // Create and return the HttpRequest object
-        Ok(Some(HttpRequest::new(method, path.to_string(), headers, body)))
     }
 
     fn send_response(&mut self, response: HttpResponse) -> Result<(), String> {
-        // Implementation for sending an HTTP response
         if !self.connected {
-            return Err("Client is not connected".to_string());
+            return Err("Client is not connected".into());
         }
-
-        let mut r = response.clone();
-
-        r.headers.push(("Connection".to_string(), "keep-alive".to_string()));
-
-        let chunked = !r.body.is_none() && r.body.clone().unwrap_or_default().len() > 1024; // Arbitrary threshold for chunked encoding
-        let is_gzip = r.headers.iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("Content-Encoding") && v.eq_ignore_ascii_case("gzip"));
-
-        if chunked {
-            r.headers.push(("Transfer-Encoding".to_string(), "chunked".to_string()));
-        } else {
-            let content_length = r.body.as_ref().map_or(0, |b| b.len());
-            r.headers.push(("Content-Length".to_string(), content_length.to_string()));
+        match &mut self.connection {
+            Connection::Plain(r) => write_response(r.get_mut(), response),
+            Connection::Tls(r) => write_response(r.get_mut(), response),
         }
-
-        let status_line = format!("HTTP/1.1 {} {}\r\n", r.status.code, r.status.text);
-        let mut headers = String::new();
-        for (key, value) in &r.headers {
-            headers.push_str(&format!("{}: {}\r\n", key, value));
-        }
-        headers.push_str("\r\n"); // End of headers
-
-        let response_text: String;
-
-        if(chunked) {
-            response_text = format!("{}{}", status_line, headers);
-            self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write chunked response: {}", e))?;
-
-            let mut body = r.body.clone().unwrap_or_default();
-            if is_gzip {
-                body = GzEncoder::new().encode(&body)
-                    .map_err(|e| format!("Failed to gzip response body: {}", e))?;;
-            }
-            write_chunked(self.reader.get_mut(), &body).map_err(|e| format!("Failed to write chunked response: {}", e))?;
-        } else {
-            let mut body = r.body.clone().unwrap_or_default();
-            if is_gzip {
-                body = GzEncoder::new().encode(&body)
-                    .map_err(|e| format!("Failed to gzip response body: {}", e))?;;
-            }
-            response_text = format!("{}{}", status_line, headers);
-            self.reader.get_mut().write_all(response_text.as_bytes()).map_err(|e| format!("Failed to write response header: {}", e))?;
-            self.reader.get_mut().write_all(&body).map_err(|e| format!("Failed to write response body: {}", e))?;
-        }
-
-        println!(
-            "Sending response: {}",
-            r
-        );
-
-        Ok(())
     }
 
     fn disconnect(&mut self) -> Result<(), String> {
-        // Implementation for disconnecting the client
         if !self.connected {
-            return Err("Client is not connected".to_string());
+            return Err("Client is not connected".into());
         }
-        // Simulate disconnecting
-        if let Err(e) = self.reader.get_mut().shutdown(std::net::Shutdown::Both) {
-            return Err(format!("Failed to disconnect: {}", e));
+        match &mut self.connection {
+            Connection::Plain(r) => r
+                .get_mut()
+                .shutdown(std::net::Shutdown::Both)
+                .map_err(|e| e.to_string())?,
+            Connection::Tls(r) => r.get_mut().shutdown().map_err(|e| e.to_string())?,
         }
         println!("Client disconnected from {}:{}", self.ip_address, self.port);
         self.connected = false;
@@ -413,13 +451,12 @@ impl HttpServerClient for HttpV11ServerClient {
     }
 
     fn new(ip_address: IpAddr, port: u16, stream: TcpStream) -> Self {
-        let reader = BufReader::new(stream.try_clone().expect("Failed to clone stream"));
+        let reader = BufReader::new(stream);
         HttpV11ServerClient {
             ip_address,
             port,
             connected: false,
-            stream,
-            reader,
+            connection: Connection::Plain(reader),
             thread: None,
         }
     }
@@ -427,18 +464,29 @@ impl HttpServerClient for HttpV11ServerClient {
     fn get_ip_address(&self) -> Result<IpAddr, String> {
         Ok(self.ip_address)
     }
-
     fn get_port(&self) -> Result<u16, String> {
         Ok(self.port)
     }
 }
-
 impl HttpV11ServerClient {
     fn join(&mut self) -> Result<(), String> {
         if let Some(thread) = self.thread.take() {
-            thread.join().map_err(|_| "Failed to join client thread".to_string())?;
+            thread
+                .join()
+                .map_err(|_| "Failed to join client thread".to_string())?;
         }
         Ok(())
+    }
+
+    fn new_tls(ip_address: IpAddr, port: u16, session: TlsSession) -> Self {
+        let reader = BufReader::new(session);
+        HttpV11ServerClient {
+            ip_address,
+            port,
+            connected: false,
+            connection: Connection::Tls(reader),
+            thread: None,
+        }
     }
 }
 pub struct HttpV11Server {
@@ -449,6 +497,7 @@ pub struct HttpV11Server {
     tcp_listener: Option<TcpListener>,
     server_thread: Option<std::thread::JoinHandle<()>>,
     mappings: Arc<Mutex<Vec<Box<dyn HttpMapping + Send + Sync>>>>,
+    tls_config: Option<TlsConfig>,
 }
 
 impl HttpServer for HttpV11Server {
@@ -465,18 +514,24 @@ impl HttpServer for HttpV11Server {
         let tcp_listener = TcpListener::bind((self.address, self.port))
             .map_err(|e| format!("Failed to bind to {}: {}: {}", self.address, self.port, e))?;
         // Set the listener to non-blocking mode
-        tcp_listener.set_nonblocking(true)
+        tcp_listener
+            .set_nonblocking(true)
             .map_err(|e| format!("Failed to set non-blocking mode: {}", e))?;
-        self.tcp_listener = Some(tcp_listener.try_clone().expect("Expected valid tcp listener"));
+        self.tcp_listener = Some(
+            tcp_listener
+                .try_clone()
+                .expect("Expected valid tcp listener"),
+        );
         self.clients.lock().unwrap().clear(); // Clear any existing clients
 
         *self.status.lock().unwrap() = ServerStatus::Running;
 
         //Start listening for incoming connections on a separate thread
         let listener = tcp_listener.try_clone().map_err(|e| e.to_string())?;
-        let status   = Arc::clone(&self.status);
+        let status = Arc::clone(&self.status);
         let mappings = Arc::clone(&self.mappings);
-        let clients  = Arc::clone(&self.clients);
+        let clients = Arc::clone(&self.clients);
+        let tls_config = self.tls_config.clone();
         // 2) Now spawn your listener thread without touching `self` anymore:
         self.server_thread = Some(std::thread::spawn(move || {
             loop {
@@ -490,8 +545,10 @@ impl HttpServer for HttpV11Server {
                     Ok((stream, addr)) => {
                         println!("Accepted {}", addr);
                         // Create a new client
-                        let client = create_client(stream).unwrap();
-                        client.lock().unwrap().thread = handle_client(client.clone(), mappings.clone()).expect("Failed to handle client");
+                        let client = create_client(stream, tls_config.clone()).unwrap();
+                        client.lock().unwrap().thread =
+                            handle_client(client.clone(), mappings.clone())
+                                .expect("Failed to handle client");
                         // Add the client to the list of clients
                         clients.lock().unwrap().push(client.clone());
                     }
@@ -574,7 +631,12 @@ impl HttpV11Server {
             address,
             tcp_listener: None,
             server_thread: None,
+            tls_config: None,
         }
+    }
+
+    pub fn enable_tls(&mut self, config: TlsConfig) {
+        self.tls_config = Some(config);
     }
 }
 
@@ -604,7 +666,8 @@ fn validate_request(request: &HttpRequest) -> Result<(), String> {
     if !request
         .headers
         .iter()
-        .any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+        .any(|(k, _)| k.eq_ignore_ascii_case("host"))
+    {
         return Err("Missing required `Host` header".into());
     }
 
@@ -620,8 +683,7 @@ fn validate_request(request: &HttpRequest) -> Result<(), String> {
             .any(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"));
         if !has_len && !has_te {
             return Err(
-                "Requests with a body must include `Content-Length` or `Transfer-Encoding`"
-                    .into(),
+                "Requests with a body must include `Content-Length` or `Transfer-Encoding`".into(),
             );
         }
     }
@@ -633,7 +695,8 @@ fn validate_request(request: &HttpRequest) -> Result<(), String> {
     ) && !request
         .headers
         .iter()
-        .any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+    {
         return Err("POST/PUT requests should include a `Content-Type` header".into());
     }
 
@@ -641,7 +704,8 @@ fn validate_request(request: &HttpRequest) -> Result<(), String> {
     for (name, value) in &request.headers {
         if !name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-!#$%&'*+.^_`|~".contains(c)) {
+            .all(|c| c.is_ascii_alphanumeric() || "-!#$%&'*+.^_`|~".contains(c))
+        {
             return Err(format!("Invalid header name token: `{}`", name));
         }
         if value.bytes().any(|b| b == b'\r' || b == b'\n') {
@@ -652,14 +716,38 @@ fn validate_request(request: &HttpRequest) -> Result<(), String> {
     Ok(())
 }
 
-fn create_client(tcp_stream: TcpStream) -> Result<Arc<Mutex<HttpV11ServerClient>>, String> {
-    let client = Arc::new(Mutex::new(HttpV11ServerClient::new(tcp_stream.local_addr().unwrap().ip(), tcp_stream.local_addr().unwrap().port(), tcp_stream)));
-    client.lock().unwrap().connected = true;
-    Ok(client)
+fn create_client(
+    tcp_stream: TcpStream,
+    tls: Option<TlsConfig>,
+) -> Result<Arc<Mutex<HttpV11ServerClient>>, String> {
+    if let Some(_cfg) = tls {
+        let mut session = TlsSession::new(tcp_stream);
+        server_handshake(&mut session).map_err(|e| e.to_string())?;
+        let addr = session.local_addr().unwrap();
+        let client = Arc::new(Mutex::new(HttpV11ServerClient::new_tls(
+            addr.ip(),
+            addr.port(),
+            session,
+        )));
+        client.lock().unwrap().connected = true;
+        Ok(client)
+    } else {
+        let addr = tcp_stream.local_addr().unwrap();
+        let client = Arc::new(Mutex::new(HttpV11ServerClient::new(
+            addr.ip(),
+            addr.port(),
+            tcp_stream,
+        )));
+        client.lock().unwrap().connected = true;
+        Ok(client)
+    }
 }
 
-fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Vec<Box<dyn HttpMapping + Send + Sync>>>>) -> Result<Option<std::thread::JoinHandle<()>>, Error> {
-    if(client.lock().unwrap().is_connected().unwrap_or(false) == false) {
+fn handle_client(
+    client: Arc<Mutex<HttpV11ServerClient>>,
+    mappings: Arc<Mutex<Vec<Box<dyn HttpMapping + Send + Sync>>>>,
+) -> Result<Option<std::thread::JoinHandle<()>>, Error> {
+    if (client.lock().unwrap().is_connected().unwrap_or(false) == false) {
         return Ok(None); // Client is not connected, return None
     }
     let handle = std::thread::spawn(move || {
@@ -675,9 +763,14 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                         continue;
                     }
 
-                    println!("Received request: {}", request.clone().expect("Request should not be None"));
+                    println!(
+                        "Received request: {}",
+                        request.clone().expect("Request should not be None")
+                    );
                     // Validate the request
-                    if let Err(e) = validate_request(&request.clone().expect("Request should not be None")) {
+                    if let Err(e) =
+                        validate_request(&request.clone().expect("Request should not be None"))
+                    {
                         eprintln!("Invalid request: {}", e);
                         let err = HttpResponse::from_status(
                             StatusCode::BadRequest,
@@ -689,20 +782,28 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                     }
 
                     let request = request.expect("Request should not be None");
-                    let keep_alive = request.headers.iter()
-                        .any(|(k, v)| k.eq_ignore_ascii_case("Connection") && v.eq_ignore_ascii_case("keep-alive"));
+                    let keep_alive = request.headers.iter().any(|(k, v)| {
+                        k.eq_ignore_ascii_case("Connection") && v.eq_ignore_ascii_case("keep-alive")
+                    });
                     let mut handled = false;
 
                     for mapping in mappings.lock().unwrap().iter() {
                         if mapping.matches_url(&request.path)
-                            && mapping.matches_method(&request.method) {
+                            && mapping.matches_method(&request.method)
+                        {
                             handled = true;
                             match mapping.handle_request(&request) {
                                 Ok(mut resp) => {
                                     let response_length = resp.body.as_ref().map_or(0, |b| b.len());
-                                    if response_length > 1024 && request.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("Accept-Encoding") && v.contains("gzip")) {
+                                    if response_length > 1024
+                                        && request.headers.iter().any(|(k, v)| {
+                                            k.eq_ignore_ascii_case("Accept-Encoding")
+                                                && v.contains("gzip")
+                                        })
+                                    {
                                         // Add gzip encoding if body is large
-                                        resp.headers.push(("Content-Encoding".into(), "gzip".into()));
+                                        resp.headers
+                                            .push(("Content-Encoding".into(), "gzip".into()));
                                     }
                                     if let Err(e) = c.send_response(resp) {
                                         eprintln!("Sending Response: {}", e);
@@ -733,7 +834,8 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
                     println!("keep_alive: {}", keep_alive);
 
                     if !keep_alive {
-                        c.disconnect().unwrap_or_else(|e| eprintln!("disconnect error: {}", e));
+                        c.disconnect()
+                            .unwrap_or_else(|e| eprintln!("disconnect error: {}", e));
                         break; // Exit the loop if not keep-alive
                     }
                 }
@@ -755,7 +857,10 @@ fn handle_client(client: Arc<Mutex<HttpV11ServerClient>>, mappings: Arc<Mutex<Ve
 
     // Return the thread handle
     if handle.is_finished() {
-        return Err(Error::new(std::io::ErrorKind::Other, "Client thread finished immediately"));
+        return Err(Error::new(
+            std::io::ErrorKind::Other,
+            "Client thread finished immediately",
+        ));
     }
 
     // Thread handle is returned, or `None` if the client is not connected
@@ -787,7 +892,10 @@ mod tests {
         let req = HttpRequest::new(
             RequestMethod::Post,
             "/".into(),
-            vec![("Host".into(), "a".into()), ("Content-Type".into(), "text/plain".into())],
+            vec![
+                ("Host".into(), "a".into()),
+                ("Content-Type".into(), "text/plain".into()),
+            ],
             Some("body".into()),
         );
         assert!(validate_request(&req).is_err());
@@ -796,7 +904,10 @@ mod tests {
         let req = HttpRequest::new(
             RequestMethod::Get,
             "/".into(),
-            vec![("Bad Header".into(), "v".into()), ("Host".into(), "a".into())],
+            vec![
+                ("Bad Header".into(), "v".into()),
+                ("Host".into(), "a".into()),
+            ],
             None,
         );
         assert!(validate_request(&req).is_err());
@@ -804,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_multiple_requests_single_connection() {
-        use std::net::{TcpListener, TcpStream, Shutdown};
+        use std::net::{Shutdown, TcpListener, TcpStream};
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -820,8 +931,12 @@ mod tests {
         });
 
         let mut stream = TcpStream::connect(addr).unwrap();
-        stream.write_all(b"GET /one HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
-        stream.write_all(b"GET /two HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        stream
+            .write_all(b"GET /one HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        stream
+            .write_all(b"GET /two HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
         stream.shutdown(Shutdown::Write).unwrap();
 
         let (req1, req2) = handle.join().unwrap();

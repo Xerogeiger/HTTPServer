@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 
 use super::aes::AesCipher;
-use super::record::{encrypt_record, decrypt_record, ContentType, RecordHeader, TLS_VERSION_1_2};
+use super::record::{decrypt_record, encrypt_record, ContentType, RecordHeader, TLS_VERSION_1_2};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TlsState {
@@ -19,6 +19,19 @@ pub struct TlsSession {
     cipher: Option<AesCipher>,
     mac_key: Vec<u8>,
     iv: [u8; 16],
+}
+
+impl Clone for TlsSession {
+    fn clone(&self) -> Self {
+        TlsSession {
+            stream: self.stream.try_clone().expect("Failed to clone stream"),
+            state: self.state,
+            buffer: self.buffer.clone(),
+            cipher: self.cipher.clone(),
+            mac_key: self.mac_key.clone(),
+            iv: self.iv,
+        }
+    }
 }
 
 impl TlsSession {
@@ -47,6 +60,10 @@ impl TlsSession {
         self.state = state;
     }
 
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.stream.local_addr()
+    }
+
     /// Send a TLS record with the given `content_type` and `payload`.
     pub fn send(&mut self, content_type: ContentType, payload: &[u8]) -> std::io::Result<()> {
         let data = if self.state == TlsState::Encrypted {
@@ -70,17 +87,56 @@ impl TlsSession {
     pub fn recv(&mut self) -> std::io::Result<(ContentType, Vec<u8>)> {
         let mut header_buf = [0u8; 5];
         self.stream.read_exact(&mut header_buf)?;
-        let header = RecordHeader::parse(&header_buf).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header"))?;
+        let header = RecordHeader::parse(&header_buf).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header")
+        })?;
         let mut payload = vec![0u8; header.length as usize];
         self.stream.read_exact(&mut payload)?;
         if self.state == TlsState::Encrypted {
             let cipher = self.cipher.as_ref().expect("cipher not set");
             let record = decrypt_record(&header, &payload, cipher, &self.mac_key, &self.iv)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "MAC check failed"))?;
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "MAC check failed")
+                })?;
             Ok((record.header.content_type, record.payload))
         } else {
             Ok((header.content_type, payload))
         }
+    }
+
+    pub fn shutdown(&mut self) -> std::io::Result<()> {
+        self.state = TlsState::Closed;
+        self.stream.shutdown(std::net::Shutdown::Both)
+    }
+}
+
+impl Read for TlsSession {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.buffer.is_empty() {
+            let (ct, data) = self.recv()?;
+            if ct != 23 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unexpected content type",
+                ));
+            }
+            self.buffer = data;
+        }
+        let n = std::cmp::min(buf.len(), self.buffer.len());
+        buf[..n].copy_from_slice(&self.buffer[..n]);
+        self.buffer.drain(0..n);
+        Ok(n)
+    }
+}
+
+impl Write for TlsSession {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.send(23, buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
     }
 }
 
