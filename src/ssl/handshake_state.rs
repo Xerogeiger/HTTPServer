@@ -167,6 +167,7 @@ pub fn server_handshake(session: &mut TlsSession) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
 
@@ -190,6 +191,31 @@ mod tests {
         client.send(23, b"hello").unwrap();
         let (_, resp) = client.recv().unwrap();
         assert_eq!(resp, b"world");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn tls_stream_roundtrip() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(socket);
+            server_handshake(&mut server).unwrap();
+            let mut buf = [0u8; 4];
+            server.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"ping");
+            server.write_all(b"pong").unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        client_handshake(&mut client).unwrap();
+        client.write_all(b"ping").unwrap();
+        let mut resp = [0u8; 4];
+        client.read_exact(&mut resp).unwrap();
+        assert_eq!(&resp, b"pong");
 
         handle.join().unwrap();
     }

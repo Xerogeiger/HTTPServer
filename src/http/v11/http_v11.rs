@@ -870,6 +870,7 @@ fn handle_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::shared::{ContentType, HttpRequest, HttpResponse, RequestMethod, StatusCode};
 
     #[test]
     fn test_validate_request_success() {
@@ -942,5 +943,62 @@ mod tests {
         let (req1, req2) = handle.join().unwrap();
         assert_eq!(req1.path, "/one");
         assert_eq!(req2.path, "/two");
+    }
+
+    #[test]
+    fn https_server_connection() {
+        use std::io::{Read, Write};
+        use std::net::{IpAddr, Ipv4Addr, TcpStream};
+        use crate::ssl::handshake_state::client_handshake;
+        use crate::ssl::state::TlsSession;
+
+        struct HelloMapping;
+        impl HttpMapping for HelloMapping {
+            fn matches_url(&self, url: &str) -> bool {
+                url == "/hello"
+            }
+
+            fn matches_method(&self, method: &RequestMethod) -> bool {
+                *method == RequestMethod::Get
+            }
+
+            fn get_content_type(&self) -> ContentType {
+                ContentType::TextPlain
+            }
+
+            fn handle_request(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
+                Ok(HttpResponse::from_status(
+                    StatusCode::Ok,
+                    vec![("Content-Type".into(), ContentType::TextPlain.to_string())],
+                    Some(b"hi".to_vec()),
+                ))
+            }
+        }
+
+        let mut server = HttpV11Server::new(0, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        server.add_mapping(Box::new(HelloMapping)).unwrap();
+        server.enable_tls(TlsConfig { cert: vec![], key: vec![], ciphers: vec![] });
+        server.start().unwrap();
+
+        let port = server
+            .tcp_listener
+            .as_ref()
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let mut session = TlsSession::new(stream);
+        client_handshake(&mut session).unwrap();
+        session
+            .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        session.flush().unwrap();
+        let (_, data) = session.recv().unwrap();
+        let text = String::from_utf8_lossy(&data);
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+
+        server.stop().unwrap();
     }
 }
