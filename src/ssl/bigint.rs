@@ -6,6 +6,90 @@ use std::fmt;
 pub struct BigUint(Vec<u32>);
 
 impl BigUint {
+    /// Create a new BigUint trimming leading zeros.
+    fn new(mut limbs: Vec<u32>) -> Self {
+        while limbs.len() > 1 && limbs[0] == 0 {
+            limbs.remove(0);
+        }
+        BigUint(limbs)
+    }
+
+    /// Zero constant
+    fn zero() -> Self {
+        BigUint(vec![0])
+    }
+
+    /// Multiply by a single 32-bit digit.
+    fn mul_u32(&self, rhs: u32) -> BigUint {
+        if rhs == 0 {
+            return BigUint::zero();
+        }
+        let mut res_rev = Vec::with_capacity(self.0.len() + 1);
+        let mut carry: u64 = 0;
+        for &limb in self.0.iter().rev() {
+            let prod = limb as u64 * rhs as u64 + carry;
+            res_rev.push((prod & 0xFFFF_FFFF) as u32);
+            carry = prod >> 32;
+        }
+        if carry > 0 {
+            res_rev.push(carry as u32);
+        }
+        res_rev.reverse();
+        BigUint::new(res_rev)
+    }
+
+    /// Multiply two BigUints.
+    fn mul(&self, other: &BigUint) -> BigUint {
+        let mut result = BigUint::zero();
+        for (i, &digit) in other.0.iter().rev().enumerate() {
+            if digit == 0 {
+                continue;
+            }
+            let mut part = self.mul_u32(digit).0;
+            part.extend(std::iter::repeat(0).take(i));
+            result = result.add(&BigUint::new(part));
+        }
+        result
+    }
+
+    /// Compute self modulo m via long division.
+    fn rem(&self, m: &BigUint) -> BigUint {
+        if self.cmp(m) == Ordering::Less {
+            return self.clone();
+        }
+        let (mut q, mut r) = (Vec::new(), BigUint::zero());
+        for &limb in &self.0 {
+            if !(r.0.len() == 1 && r.0[0] == 0) {
+                r.0.push(limb);
+            } else {
+                r.0[0] = limb;
+            }
+            let mut low: u64 = 0;
+            let mut high: u64 = 0xFFFF_FFFF;
+            while low <= high {
+                let mid = ((low + high) >> 1) as u32;
+                let candidate = m.mul_u32(mid);
+                if candidate.cmp(&r) == Ordering::Greater {
+                    if mid == 0 {
+                        break;
+                    }
+                    high = mid as u64 - 1;
+                } else {
+                    low = mid as u64 + 1;
+                }
+            }
+            let qdigit = high as u32;
+            if qdigit > 0 {
+                let sub = m.mul_u32(qdigit);
+                r = r.sub(&sub);
+            }
+            q.push(qdigit);
+        }
+        r
+    }
+}
+
+impl BigUint {
     /// Construct from big-endian bytes.
     pub fn from_bytes_be(bytes: &[u8]) -> BigUint {
         let mut limbs = Vec::new();
@@ -24,7 +108,7 @@ impl BigUint {
         if limbs.is_empty() {
             limbs.push(0);
         }
-        BigUint(limbs)
+        BigUint::new(limbs)
     }
 
     /// Compare two BigUint.
@@ -46,7 +130,7 @@ impl BigUint {
     pub fn add(&self, other: &BigUint) -> BigUint {
         let a = &self.0;
         let b = &other.0;
-        let mut res = Vec::new();
+        let mut res = Vec::with_capacity(a.len().max(b.len()) + 1);
         let mut carry = 0u64;
         let mut i = 0;
         while i < a.len() || i < b.len() || carry > 0 {
@@ -58,14 +142,14 @@ impl BigUint {
             i += 1;
         }
         res.reverse();
-        BigUint(res)
+        BigUint::new(res)
     }
 
     /// Subtract other from self (assumes self ≥ other).
     pub fn sub(&self, other: &BigUint) -> BigUint {
         let a = &self.0;
         let b = &other.0;
-        let mut res = Vec::new();
+        let mut res = Vec::with_capacity(a.len());
         let mut borrow = 0i64;
         let mut i = 0;
         while i < a.len() {
@@ -82,11 +166,7 @@ impl BigUint {
             i += 1;
         }
         res.reverse();
-        // Trim leading zeros
-        while res.len() > 1 && res[0] == 0 {
-            res.remove(0);
-        }
-        BigUint(res)
+        BigUint::new(res)
     }
 
     /// Compute (self + other) mod m.
@@ -99,20 +179,10 @@ impl BigUint {
         }
     }
 
-    /// Compute (self * other) mod m via double-and-add.
+    /// Compute (self * other) mod m using schoolbook multiplication.
     pub fn mul_mod(&self, other: &BigUint, m: &BigUint) -> BigUint {
-        let mut result = BigUint::from_bytes_be(&[0]);
-        let mut base = self.clone();
-        for &digit in other.0.iter().rev() {
-            for i in (0..32).rev() {
-                // result = (result * 2) mod m
-                result = result.add_mod(&result, m);
-                if (digit >> i) & 1 == 1 {
-                    result = result.add_mod(&base, m);
-                }
-            }
-        }
-        result
+        let prod = self.mul(other);
+        prod.rem(m)
     }
 
     /// Modular exponentiation: self^exp mod m.
@@ -143,7 +213,10 @@ impl BigUint {
             quo_limbs.push(q);
         }
         // Trim leading zeros
-        let first_non_zero = quo_limbs.iter().position(|&x| x != 0).unwrap_or(quo_limbs.len() - 1);
+        let first_non_zero = quo_limbs
+            .iter()
+            .position(|&x| x != 0)
+            .unwrap_or(quo_limbs.len() - 1);
         let quo = quo_limbs[first_non_zero..].to_vec();
         (BigUint(quo), rem as u32)
     }
@@ -197,5 +270,14 @@ mod tests {
         let m = BigUint::from_bytes_be(&[7]);
         let r = a.modpow(&e, &m);
         assert_eq!(r.to_bytes_be(), vec![4]);
+    }
+
+    #[test]
+    fn test_mul_mod_basic() {
+        let a = BigUint::from_bytes_be(&123456789u32.to_be_bytes());
+        let b = BigUint::from_bytes_be(&987654321u32.to_be_bytes());
+        let m = BigUint::from_bytes_be(&1000000007u32.to_be_bytes());
+        let r = a.mul_mod(&b, &m);
+        assert_eq!(r.to_bytes_be(), vec![0x0F, 0x71, 0xA8, 0x2B]); // 259106859
     }
 }
