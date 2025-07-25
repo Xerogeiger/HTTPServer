@@ -10,6 +10,22 @@ pub struct DerObject {
     pub value: Vec<u8>,
 }
 
+impl DerObject {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![self.tag];
+        if self.length < 0x80 {
+            bytes.push(self.length as u8);
+        } else {
+            let len_bytes = (self.length as u32).to_be_bytes();
+            let num_length_bytes = len_bytes.iter().take_while(|&&b| b == 0).count();
+            bytes.push(0x80 | (len_bytes.len() - num_length_bytes) as u8);
+            bytes.extend_from_slice(&len_bytes[num_length_bytes..]);
+        }
+        bytes.extend_from_slice(&self.value);
+        bytes
+    }
+}
+
 /// A streaming DER reader
 pub struct DerReader<R: Read> {
     reader: R,
@@ -86,7 +102,7 @@ impl X509Certificate {
 
         // tbsCertificate
         let tbs_sequence = cert_reader.read_object()?;
-        let tbs_bytes = tbs_sequence.value.clone();
+        let tbs_bytes = tbs_sequence.to_bytes();
         let mut tbs_reader = DerReader::new(Cursor::new(&tbs_sequence.value));
 
         // Version & Serial
@@ -310,7 +326,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore]
     fn test_parse_x509() {
         let der = include_bytes!("../../tests/test.cer"); // Replace with actual DER file
         let cert = X509Certificate::parse(der).expect("Failed to parse X509 certificate");
