@@ -5,6 +5,7 @@ use crate::http::shared::HttpVersion::V10;
 
 mod http;
 mod decode;
+mod ssl;
 
 fn main() {
     let mut server = V11.create_server(1234).unwrap();
