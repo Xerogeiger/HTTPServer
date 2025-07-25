@@ -1,9 +1,9 @@
 use crate::decode::gz_decoder::GzDecoder;
 use crate::decode::gz_encoder::GzEncoder;
 use crate::http::client::HttpClient;
-use crate::http::server::{HttpServer, TlsConfig};
 use crate::http::server::HttpServerClient;
 use crate::http::server::{HttpMapping, ServerStatus};
+use crate::http::server::{HttpServer, TlsConfig};
 use crate::http::shared::ContentType::TextPlain;
 use crate::http::shared::RequestMethod::Get;
 use crate::http::shared::{
@@ -29,7 +29,6 @@ pub struct HttpV11Client {
     stream: Option<ClientStream>,
     keep_alive: bool,
     use_tls: bool,
-    
     // Whether to add 'Connection: keep-alive' header
     // and reuse connections
 }
@@ -67,7 +66,7 @@ impl HttpV11Client {
                 tcp.set_write_timeout(Some(Duration::from_secs(5)))?;
                 if self.use_tls {
                     let mut session = TlsSession::new(tcp);
-                    client_handshake(&mut session)?;
+                    client_handshake(&mut session, "localhost")?;
                     self.stream = Some(ClientStream::Tls(session));
                 } else {
                     self.stream = Some(ClientStream::Plain(tcp));
@@ -134,7 +133,11 @@ impl HttpClient for HttpV11Client {
         // Mutable borrow to manage connection & write
         let mut headers = self.default_headers.clone();
         headers.push(("Host".into(), format!("{}:{}", self.host, self.port)));
-        let conn_val = if self.keep_alive { "keep-alive" } else { "close" };
+        let conn_val = if self.keep_alive {
+            "keep-alive"
+        } else {
+            "close"
+        };
         headers.push(("Connection".into(), conn_val.into()));
         headers.push(("User-Agent".into(), "RustHttpClient/1.1".into()));
 
@@ -192,7 +195,10 @@ impl HttpV11Client {
         self.receive_response_inner(&mut reader)
     }
 
-    fn receive_response_inner<R: Read>(&self, reader: &mut BufReader<R>) -> Result<HttpResponse, String> {
+    fn receive_response_inner<R: Read>(
+        &self,
+        reader: &mut BufReader<R>,
+    ) -> Result<HttpResponse, String> {
         // 1) Status line
         let mut status_line = String::new();
         reader
@@ -985,10 +991,10 @@ mod tests {
 
     #[test]
     fn https_server_connection() {
-        use std::io::{Read, Write};
-        use std::net::{IpAddr, Ipv4Addr, TcpStream};
         use crate::ssl::handshake_state::client_handshake;
         use crate::ssl::state::TlsSession;
+        use std::io::{Read, Write};
+        use std::net::{IpAddr, Ipv4Addr, TcpStream};
 
         struct HelloMapping;
         impl HttpMapping for HelloMapping {
@@ -1015,7 +1021,11 @@ mod tests {
 
         let mut server = HttpV11Server::new(0, IpAddr::V4(Ipv4Addr::LOCALHOST));
         server.add_mapping(Box::new(HelloMapping)).unwrap();
-        server.enable_tls(TlsConfig { cert: vec![], key: vec![], ciphers: vec![] });
+        server.enable_tls(TlsConfig {
+            cert: include_bytes!("../../../tests/test.cer").to_vec(),
+            key: vec![],
+            ciphers: vec![],
+        });
         server.start().unwrap();
 
         let port = server
@@ -1028,7 +1038,7 @@ mod tests {
 
         let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
         let mut session = TlsSession::new(stream);
-        client_handshake(&mut session).unwrap();
+        client_handshake(&mut session, "localhost").unwrap();
         session
             .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .unwrap();
@@ -1046,9 +1056,15 @@ mod tests {
 
         struct HelloMapping;
         impl HttpMapping for HelloMapping {
-            fn matches_url(&self, url: &str) -> bool { url == "/hi" }
-            fn matches_method(&self, method: &RequestMethod) -> bool { *method == RequestMethod::Get }
-            fn get_content_type(&self) -> ContentType { ContentType::TextPlain }
+            fn matches_url(&self, url: &str) -> bool {
+                url == "/hi"
+            }
+            fn matches_method(&self, method: &RequestMethod) -> bool {
+                *method == RequestMethod::Get
+            }
+            fn get_content_type(&self) -> ContentType {
+                ContentType::TextPlain
+            }
             fn handle_request(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
                 Ok(HttpResponse::from_status(
                     StatusCode::Ok,
@@ -1060,10 +1076,22 @@ mod tests {
 
         let mut server = HttpV11Server::new(0, IpAddr::V4(Ipv4Addr::LOCALHOST));
         server.add_mapping(Box::new(HelloMapping)).unwrap();
-        server.enable_tls(TlsConfig { cert: vec![], key: vec![], ciphers: vec![] }).unwrap();
+        server
+            .enable_tls(TlsConfig {
+                cert: include_bytes!("../../../tests/test.cer").to_vec(),
+                key: vec![],
+                ciphers: vec![],
+            })
+            .unwrap();
         server.start().unwrap();
 
-        let port = server.tcp_listener.as_ref().unwrap().local_addr().unwrap().port();
+        let port = server
+            .tcp_listener
+            .as_ref()
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
 
         let mut client = HttpV11Client::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         client.enable_tls();

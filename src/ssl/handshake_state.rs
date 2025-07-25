@@ -14,7 +14,7 @@ const CONTENT_TYPE_HANDSHAKE: ContentType = 22;
 const CONTENT_TYPE_CHANGE_CIPHER_SPEC: ContentType = 20;
 
 /// Perform the client side of the Diffie-Hellman handshake.
-pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
+pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
 
     // -------- ClientHello --------
@@ -27,7 +27,10 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
     let (server_hello, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello"))?;
     if server_hello.handshake_type != HandshakeType::ServerHello {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerHello"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ServerHello",
+        ));
     }
     let server_random = server_hello.message.clone();
 
@@ -36,16 +39,30 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
     let (cert_msg, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad certificate"))?;
     if cert_msg.handshake_type != HandshakeType::Certificate {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected Certificate"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected Certificate",
+        ));
     }
-    // certificate bytes are in cert_msg.message but we don't verify
+    // parse and verify certificate chain
+    if !cert_msg.message.is_empty() {
+        use super::x509::CertificateChain;
+        let chain = CertificateChain::parse(&cert_msg.message)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        chain
+            .verify(host)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    }
 
     // -------- ServerKeyExchange --------
     let (_, data) = session.recv()?;
     let (ske, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server key exchange"))?;
     if ske.handshake_type != HandshakeType::ServerKeyExchange {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerKeyExchange"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ServerKeyExchange",
+        ));
     }
     let mut idx = 0;
     let p_len = u16::from_be_bytes([ske.message[idx], ske.message[idx + 1]]) as usize;
@@ -65,7 +82,10 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
     let (shd, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello done"))?;
     if shd.handshake_type != HandshakeType::ServerHelloDone {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerHelloDone"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ServerHelloDone",
+        ));
     }
 
     // -------- ClientKeyExchange --------
@@ -103,13 +123,19 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
     // -------- Wait for Server ChangeCipherSpec --------
     let (ct, _) = session.recv()?;
     if ct != CONTENT_TYPE_CHANGE_CIPHER_SPEC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ChangeCipherSpec"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ChangeCipherSpec",
+        ));
     }
     let (_, data) = session.recv()?;
     let (fin2, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
     if fin2.handshake_type != HandshakeType::Finished {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected Finished"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected Finished",
+        ));
     }
 
     Ok(())
@@ -124,7 +150,10 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()>
     let (client_hello, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client hello"))?;
     if client_hello.handshake_type != HandshakeType::ClientHello {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ClientHello"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ClientHello",
+        ));
     }
     let client_random = client_hello.message.clone();
 
@@ -134,7 +163,18 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()>
     session.send(CONTENT_TYPE_HANDSHAKE, &hello.to_bytes())?;
 
     // -------- Certificate --------
-    let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert.to_vec());
+    let cert_payload = if !cert.is_empty() {
+        let mut chain = Vec::new();
+        chain.extend_from_slice(&((cert.len() as u32).to_be_bytes()[1..]));
+        chain.extend_from_slice(cert);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&((chain.len() as u32).to_be_bytes()[1..]));
+        payload.extend_from_slice(&chain);
+        payload
+    } else {
+        vec![0, 0, 0] // empty chain
+    };
+    let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert_payload);
     session.send(CONTENT_TYPE_HANDSHAKE, &cert_msg.to_bytes())?;
 
     // -------- ServerKeyExchange --------
@@ -167,7 +207,10 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()>
     let (cke, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client key exchange"))?;
     if cke.handshake_type != HandshakeType::ClientKeyExchange {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ClientKeyExchange"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ClientKeyExchange",
+        ));
     }
     let mut idx = 0;
     let pub_len = u16::from_be_bytes([cke.message[idx], cke.message[idx + 1]]) as usize;
@@ -188,14 +231,20 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()>
     // -------- ChangeCipherSpec --------
     let (ct, _) = session.recv()?;
     if ct != CONTENT_TYPE_CHANGE_CIPHER_SPEC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ChangeCipherSpec"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected ChangeCipherSpec",
+        ));
     }
     session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
     let (_, data) = session.recv()?;
     let (fin1, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
     if fin1.handshake_type != HandshakeType::Finished {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected Finished"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected Finished",
+        ));
     }
 
     // send ChangeCipherSpec and Finished
@@ -229,7 +278,7 @@ mod tests {
         });
 
         let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
-        client_handshake(&mut client).unwrap();
+        client_handshake(&mut client, "localhost").unwrap();
         client.send(23, b"hello").unwrap();
         let (_, resp) = client.recv().unwrap();
         assert_eq!(resp, b"world");
@@ -253,7 +302,7 @@ mod tests {
         });
 
         let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
-        client_handshake(&mut client).unwrap();
+        client_handshake(&mut client, "localhost").unwrap();
         client.write_all(b"ping").unwrap();
         let mut resp = [0u8; 4];
         client.read_exact(&mut resp).unwrap();
