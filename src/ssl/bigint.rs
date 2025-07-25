@@ -185,3 +185,17 @@ impl fmt::Display for BigUint {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_modpow_small() {
+        let a = BigUint::from_bytes_be(&[2]);
+        let e = BigUint::from_bytes_be(&[5]);
+        let m = BigUint::from_bytes_be(&[7]);
+        let r = a.modpow(&e, &m);
+        assert_eq!(r.to_bytes_be(), vec![4]);
+    }
+}
