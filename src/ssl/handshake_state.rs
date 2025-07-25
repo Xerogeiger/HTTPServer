@@ -4,12 +4,13 @@ use super::aes::AesCipher;
 use super::bigint::BigUint;
 use super::dh::{generate_prime, DiffieHellman};
 use super::handshake::{
-    ClientHello, ClientKeyExchangeDH, HandshakeMessage, HandshakeType, ServerHello,
-    ServerKeyExchangeDH, CertificatePayload,
+    CertificatePayload, ClientHello, ClientKeyExchangeDH, HandshakeMessage, HandshakeType,
+    ServerHello, ServerKeyExchangeDH,
 };
 use super::prf::TlsPrfSha256;
 use super::record::ContentType;
 use super::rng::secure_random_bytes;
+use super::rsa::{parse_private_key, RsaPublicKey};
 use super::state::{TlsSession, TlsState};
 
 /// TLS record content type for handshake messages.
@@ -59,6 +60,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         ));
     }
     // parse and verify certificate chain
+    let mut server_rsa: Option<RsaPublicKey> = None;
     if !cert_msg.message.is_empty() {
         use super::x509::CertificateChain;
         let payload = CertificatePayload::parse(&cert_msg.message)
@@ -68,6 +70,12 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         chain
             .verify(host)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if let Some(cert) = chain.certificates.first() {
+            server_rsa = Some(RsaPublicKey::new(
+                cert.modulus.clone(),
+                cert.exponent.clone(),
+            ));
+        }
     }
 
     // -------- ServerKeyExchange --------
@@ -82,6 +90,24 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
     }
     let params = ServerKeyExchangeDH::parse(&ske.message)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad key exchange payload"))?;
+    if let Some(rsa) = &server_rsa {
+        let mut signed = Vec::new();
+        signed.extend_from_slice(&client_random);
+        signed.extend_from_slice(&server_random);
+        signed.extend_from_slice(
+            &ServerKeyExchangeDH {
+                signature: Vec::new(),
+                ..params.clone()
+            }
+            .params_bytes(),
+        );
+        if !rsa
+            .verify_pkcs1_v1_5_sha256(&signed, &params.signature)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad signature"));
+        }
+    }
     let p = BigUint::from_bytes_be(&params.p);
     let g = BigUint::from_bytes_be(&params.g);
     let server_pub = BigUint::from_bytes_be(&params.public_key);
@@ -103,7 +129,9 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let pub_key = dh.compute_public_key(&priv_key);
     let pub_bytes = pub_key.to_bytes_be();
-    let cke_payload = ClientKeyExchangeDH { public_key: pub_bytes.clone() };
+    let cke_payload = ClientKeyExchangeDH {
+        public_key: pub_bytes.clone(),
+    };
     let cke = HandshakeMessage::new(HandshakeType::ClientKeyExchange, cke_payload.to_bytes());
     session.send(CONTENT_TYPE_HANDSHAKE, &cke.to_bytes())?;
 
@@ -149,7 +177,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
 }
 
 /// Perform the server side of the Diffie-Hellman handshake.
-pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()> {
+pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
 
     // -------- ClientHello --------
@@ -182,9 +210,15 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()>
 
     // -------- Certificate --------
     let cert_payload = if !cert.is_empty() {
-        CertificatePayload { certificates: vec![cert.to_vec()] }.to_bytes()
+        CertificatePayload {
+            certificates: vec![cert.to_vec()],
+        }
+        .to_bytes()
     } else {
-        CertificatePayload { certificates: vec![] }.to_bytes()
+        CertificatePayload {
+            certificates: vec![],
+        }
+        .to_bytes()
     };
     let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert_payload);
     session.send(CONTENT_TYPE_HANDSHAKE, &cert_msg.to_bytes())?;
@@ -200,7 +234,19 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()>
     let p_bytes = p.to_bytes_be();
     let g_bytes = g.to_bytes_be();
     let pub_bytes = pub_key.to_bytes_be();
-    let ske_payload = ServerKeyExchangeDH { p: p_bytes, g: g_bytes, public_key: pub_bytes };
+    let mut ske_payload = ServerKeyExchangeDH {
+        p: p_bytes,
+        g: g_bytes,
+        public_key: pub_bytes,
+        signature: Vec::new(),
+    };
+    let rsa_key =
+        parse_private_key(key).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut signed = Vec::new();
+    signed.extend_from_slice(&client_random);
+    signed.extend_from_slice(&server_random);
+    signed.extend_from_slice(&ske_payload.params_bytes());
+    ske_payload.signature = rsa_key.sign_pkcs1_v1_5_sha256(&signed);
     let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, ske_payload.to_bytes());
     session.send(CONTENT_TYPE_HANDSHAKE, &ske.to_bytes())?;
 
@@ -218,8 +264,12 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()>
             "expected ClientKeyExchange",
         ));
     }
-    let cke_payload = ClientKeyExchangeDH::parse(&cke.message)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client key exchange payload"))?;
+    let cke_payload = ClientKeyExchangeDH::parse(&cke.message).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad client key exchange payload",
+        )
+    })?;
     let client_pub = BigUint::from_bytes_be(&cke_payload.public_key);
     let shared = dh.compute_shared_secret(&priv_key, &client_pub);
     let pre_master = shared.to_bytes_be();
@@ -275,7 +325,10 @@ mod tests {
         let handle = thread::spawn(move || {
             let (sock, _) = listener.accept().unwrap();
             let mut server = TlsSession::new(sock);
-            server_handshake(&mut server, include_bytes!("../../tests/test.cer")).unwrap();
+            let cert =
+                crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            server_handshake(&mut server, &cert, key).unwrap();
             let (ct, data) = server.recv().unwrap();
             assert_eq!(ct, 23);
             assert_eq!(data, b"hello");
@@ -299,7 +352,10 @@ mod tests {
         let handle = thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
             let mut server = TlsSession::new(socket);
-            server_handshake(&mut server, include_bytes!("../../tests/test.cer")).unwrap();
+            let cert =
+                crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            server_handshake(&mut server, &cert, key).unwrap();
             let mut buf = [0u8; 4];
             server.read_exact(&mut buf).unwrap();
             assert_eq!(&buf, b"ping");
