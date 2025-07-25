@@ -1,4 +1,6 @@
 use crate::ssl::bigint::BigUint;
+use crate::rng::{secure_random_bytes};
+use std::io;
 
 /// Simple Diffie-Hellman key exchange over a prime field.
 /// Uses `BigUint` for arithmetic. Not cryptographically secure but
@@ -28,6 +30,14 @@ impl DiffieHellman {
             *last |= 1;
         }
         BigUint::from_bytes_be(&bytes)
+    }
+
+    /// Grab a private key using the OS RNG for `bits` bits.
+    pub fn generate_private_key_secure(bits: usize) -> io::Result<BigUint> {
+        let mut bytes = secure_random_bytes((bits + 7) / 8)?;
+        if let Some(first) = bytes.first_mut() { *first |= 0x80; }
+        if let Some(last) = bytes.last_mut() { *last |= 1; }
+        Ok(BigUint::from_bytes_be(&bytes))
     }
 
     /// Compute the public key corresponding to `private`.
@@ -82,6 +92,22 @@ pub fn generate_prime(bits: usize, seed: &mut u64) -> BigUint {
         // ensure odd
         if let Some(last) = candidate.to_bytes_be().last() { if last % 2 == 0 { let bytes = candidate.to_bytes_be(); let mut new_bytes = bytes.clone(); *new_bytes.last_mut().unwrap() |= 1; candidate = BigUint::from_bytes_be(&new_bytes); } }
         if is_prime(&candidate) { return candidate; }
+    }
+}
+
+/// Generate a prime using the OS RNG for randomness.
+pub fn generate_prime_secure(bits: usize) -> io::Result<BigUint> {
+    loop {
+        let mut candidate = DiffieHellman::generate_private_key_secure(bits)?;
+        if let Some(last) = candidate.to_bytes_be().last() {
+            if last % 2 == 0 {
+                let bytes = candidate.to_bytes_be();
+                let mut new_bytes = bytes.clone();
+                *new_bytes.last_mut().unwrap() |= 1;
+                candidate = BigUint::from_bytes_be(&new_bytes);
+            }
+        }
+        if is_prime(&candidate) { return Ok(candidate); }
     }
 }
 
