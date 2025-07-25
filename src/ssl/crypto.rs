@@ -18,10 +18,10 @@ pub mod sha1 {
     #[inline]
     fn k(t: usize) -> u32 {
         match t {
-            0..=19  => 0x5A827999,
+            0..=19 => 0x5A827999,
             20..=39 => 0x6ED9EBA1,
             40..=59 => 0x8F1BBCDC,
-            _       => 0xCA62C1D6,
+            _ => 0xCA62C1D6,
         }
     }
 
@@ -29,10 +29,10 @@ pub mod sha1 {
     #[inline]
     fn f(t: usize, b: u32, c: u32, d: u32) -> u32 {
         match t {
-            0..=19  => (b & c) | ((!b) & d),
+            0..=19 => (b & c) | ((!b) & d),
             20..=39 => b ^ c ^ d,
             40..=59 => (b & c) | (b & d) | (c & d),
-            _       => b ^ c ^ d,
+            _ => b ^ c ^ d,
         }
     }
 
@@ -116,7 +116,7 @@ pub mod sha224 {
 
     // Reuse SHA-256 constants and helper functions
     const K: [u32; 64] = super::sha256::K;
-    use super::sha256::{big_sigma0, big_sigma1, small_sigma0, small_sigma1, ch, maj};
+    use super::sha256::{big_sigma0, big_sigma1, ch, maj, small_sigma0, small_sigma1};
 
     /// Compute SHA-224 digest of `input`.
     ///
@@ -194,36 +194,42 @@ pub mod sha256 {
 
     /// SHA-256 constants.
     pub const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-        0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-        0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-        0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
 
     #[inline]
-    pub(crate) fn ch(x: u32, y: u32, z: u32) -> u32 { (x & y) ^ (!x & z) }
+    pub(crate) fn ch(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) ^ (!x & z)
+    }
     #[inline]
-    pub(crate) fn maj(x: u32, y: u32, z: u32) -> u32 { (x & y) ^ (x & z) ^ (y & z) }
+    pub(crate) fn maj(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) ^ (x & z) ^ (y & z)
+    }
     #[inline]
-    pub(crate) fn big_sigma0(x: u32) -> u32 { x.rotate_right(2)  ^ x.rotate_right(13) ^ x.rotate_right(22) }
+    pub(crate) fn big_sigma0(x: u32) -> u32 {
+        x.rotate_right(2) ^ x.rotate_right(13) ^ x.rotate_right(22)
+    }
     #[inline]
-    pub(crate) fn big_sigma1(x: u32) -> u32 { x.rotate_right(6)  ^ x.rotate_right(11) ^ x.rotate_right(25) }
+    pub(crate) fn big_sigma1(x: u32) -> u32 {
+        x.rotate_right(6) ^ x.rotate_right(11) ^ x.rotate_right(25)
+    }
     #[inline]
-    pub(crate) fn small_sigma0(x: u32) -> u32 { x.rotate_right(7)  ^ x.rotate_right(18) ^ (x >> 3) }
+    pub(crate) fn small_sigma0(x: u32) -> u32 {
+        x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3)
+    }
     #[inline]
-    pub(crate) fn small_sigma1(x: u32) -> u32 { x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10) }
+    pub(crate) fn small_sigma1(x: u32) -> u32 {
+        x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10)
+    }
 
     /// Compute SHA-256 digest of `input`.
     ///
@@ -233,15 +239,17 @@ pub mod sha256 {
     pub fn hash(input: &[u8]) -> [u8; 32] {
         // Initial hash values
         let mut h: [u32; 8] = [
-            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+            0x5be0cd19,
         ];
 
         // Pre-processing: padding
         let bit_len = (input.len() as u64) * 8;
         let mut msg = Vec::from(input);
         msg.push(0x80);
-        while (msg.len() % 64) != 56 { msg.push(0); }
+        while (msg.len() % 64) != 56 {
+            msg.push(0);
+        }
         msg.extend_from_slice(&bit_len.to_be_bytes());
 
         // Process each 512-bit chunk
@@ -311,8 +319,10 @@ pub mod sha384 {
     const H7: u64 = 0x47b5481dbefa4fa4;
 
     // Reuse SHA-512 constants and helpers
-    const K: [u64; 64] = super::sha512::K;
-    use super::sha512::{big_sigma0 as BS0, big_sigma1 as BS1, small_sigma0 as SS0, small_sigma1 as SS1, ch, maj};
+    const K: [u64; 80] = super::sha512::K;
+    use super::sha512::{
+        big_sigma0 as BS0, big_sigma1 as BS1, ch, maj, small_sigma0 as SS0, small_sigma1 as SS1,
+    };
 
     /// Compute SHA-384 digest of `input`.
     ///
@@ -389,53 +399,113 @@ pub mod sha512 {
     //! Pure-Rust SHA-512 implementation.
 
     /// SHA-512 constants.
-    pub const K: [u64; 64] = [
-        0x428a2f98d728ae22, 0x7137449123ef65cd,
-        0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
-        0x3956c25bf348b538, 0x59f111f1b605d019,
-        0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
-        0xd807aa98a3030242, 0x12835b0145706fbe,
-        0x243185be4ee4b28c, 0x550c7dc3d5ffb4e2,
-        0x72be5d74f27b896f, 0x80deb1fe3b1696b1,
-        0x9bdc06a725c71235, 0xc19bf174cf692694,
-        0xe49b69c19ef14ad2, 0xefbe4786384f25e3,
-        0x0fc19dc68b8cd5b5, 0x240ca1cc77ac9c65,
-        0x2de92c6f592b0275, 0x4a7484aa6ea6e483,
-        0x5cb0a9dcbd41fbd4, 0x76f988da831153b5,
-        0x983e5152ee66dfab, 0xa831c66d2db43210,
-        0xb00327c898fb213f, 0xbf597fc7beef0ee4,
-        0xc6e00bf33da88fc2, 0xd5a79147930aa725,
-        0x06ca6351e003826f, 0x142929670a0e6e70,
-        0x27b70a8546d22ffc, 0x2e1b21385c26c926,
-        0x4d2c6dfc5ac42aed, 0x53380d139d95b3df,
-        0x650a73548baf63de, 0x766a0abb3c77b2a8,
-        0x81c2c92e47edaee6, 0x92722c851482353b,
-        0xa2bfe8a14cf10364, 0xa81a664bbc423001,
-        0xc24b8b70d0f89791, 0xc76c51a30654be30,
-        0xd192e819d6ef5218, 0xd69906245565a910,
-        0xf40e35855771202a, 0x106aa07032bbd1b8,
-        0x19a4c116b8d2d0c8, 0x1e376c085141ab53,
-        0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
-        0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb,
-        0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
-        0x748f82ee5defb2fc, 0x78a5636f43172f60,
-        0x84c87814a1f0ab72, 0x8cc702081a6439ec,
-        0x90befffa23631e28, 0xa4506cebde82bde9,
-        0xbef9a3f7b2c67915, 0xc67178f2e372532b,
+    pub const K: [u64; 80] = [
+        0x428a2f98d728ae22,
+        0x7137449123ef65cd,
+        0xb5c0fbcfec4d3b2f,
+        0xe9b5dba58189dbbc,
+        0x3956c25bf348b538,
+        0x59f111f1b605d019,
+        0x923f82a4af194f9b,
+        0xab1c5ed5da6d8118,
+        0xd807aa98a3030242,
+        0x12835b0145706fbe,
+        0x243185be4ee4b28c,
+        0x550c7dc3d5ffb4e2,
+        0x72be5d74f27b896f,
+        0x80deb1fe3b1696b1,
+        0x9bdc06a725c71235,
+        0xc19bf174cf692694,
+        0xe49b69c19ef14ad2,
+        0xefbe4786384f25e3,
+        0x0fc19dc68b8cd5b5,
+        0x240ca1cc77ac9c65,
+        0x2de92c6f592b0275,
+        0x4a7484aa6ea6e483,
+        0x5cb0a9dcbd41fbd4,
+        0x76f988da831153b5,
+        0x983e5152ee66dfab,
+        0xa831c66d2db43210,
+        0xb00327c898fb213f,
+        0xbf597fc7beef0ee4,
+        0xc6e00bf33da88fc2,
+        0xd5a79147930aa725,
+        0x06ca6351e003826f,
+        0x142929670a0e6e70,
+        0x27b70a8546d22ffc,
+        0x2e1b21385c26c926,
+        0x4d2c6dfc5ac42aed,
+        0x53380d139d95b3df,
+        0x650a73548baf63de,
+        0x766a0abb3c77b2a8,
+        0x81c2c92e47edaee6,
+        0x92722c851482353b,
+        0xa2bfe8a14cf10364,
+        0xa81a664bbc423001,
+        0xc24b8b70d0f89791,
+        0xc76c51a30654be30,
+        0xd192e819d6ef5218,
+        0xd69906245565a910,
+        0xf40e35855771202a,
+        0x106aa07032bbd1b8,
+        0x19a4c116b8d2d0c8,
+        0x1e376c085141ab53,
+        0x2748774cdf8eeb99,
+        0x34b0bcb5e19b48a8,
+        0x391c0cb3c5c95a63,
+        0x4ed8aa4ae3418acb,
+        0x5b9cca4f7763e373,
+        0x682e6ff3d6b2b8a3,
+        0x748f82ee5defb2fc,
+        0x78a5636f43172f60,
+        0x84c87814a1f0ab72,
+        0x8cc702081a6439ec,
+        0x90befffa23631e28,
+        0xa4506cebde82bde9,
+        0xbef9a3f7b2c67915,
+        0xc67178f2e372532b,
+        0xca273eceea26619c,
+        0xd186b8c721c0c207,
+        0xeada7dd6cde0eb1e,
+        0xf57d4f7fee6ed178,
+        0x06f067aa72176fba,
+        0x0a637dc5a2c898a6,
+        0x113f9804bef90dae,
+        0x1b710b35131c471b,
+        0x28db77f523047d84,
+        0x32caab7b40c72493,
+        0x3c9ebe0a15c9bebc,
+        0x431d67c49c100d4c,
+        0x4cc5d4becb3e42b6,
+        0x597f299cfc657e2a,
+        0x5fcb6fab3ad6faec,
+        0x6c44198c4a475817,
     ];
 
     #[inline]
-    pub(crate) fn ch(x: u64, y: u64, z: u64) -> u64 { (x & y) ^ (!x & z) }
+    pub(crate) fn ch(x: u64, y: u64, z: u64) -> u64 {
+        (x & y) ^ (!x & z)
+    }
     #[inline]
-    pub(crate) fn maj(x: u64, y: u64, z: u64) -> u64 { (x & y) ^ (x & z) ^ (y & z) }
+    pub(crate) fn maj(x: u64, y: u64, z: u64) -> u64 {
+        (x & y) ^ (x & z) ^ (y & z)
+    }
     #[inline]
-    pub(crate) fn big_sigma0(x: u64) -> u64 { x.rotate_right(28) ^ x.rotate_right(34) ^ x.rotate_right(39) }
+    pub(crate) fn big_sigma0(x: u64) -> u64 {
+        x.rotate_right(28) ^ x.rotate_right(34) ^ x.rotate_right(39)
+    }
     #[inline]
-    pub(crate) fn big_sigma1(x: u64) -> u64 { x.rotate_right(14) ^ x.rotate_right(18) ^ x.rotate_right(41) }
+    pub(crate) fn big_sigma1(x: u64) -> u64 {
+        x.rotate_right(14) ^ x.rotate_right(18) ^ x.rotate_right(41)
+    }
     #[inline]
-    pub(crate) fn small_sigma0(x: u64) -> u64 { x.rotate_right(1)  ^ x.rotate_right(8)  ^ (x >> 7) }
+    pub(crate) fn small_sigma0(x: u64) -> u64 {
+        x.rotate_right(1) ^ x.rotate_right(8) ^ (x >> 7)
+    }
     #[inline]
-    pub(crate) fn small_sigma1(x: u64) -> u64 { x.rotate_right(19) ^ x.rotate_right(61) ^ (x >> 6) }
+    pub(crate) fn small_sigma1(x: u64) -> u64 {
+        x.rotate_right(19) ^ x.rotate_right(61) ^ (x >> 6)
+    }
 
     /// Compute SHA-512 digest of `input`.
     ///
@@ -459,7 +529,9 @@ pub mod sha512 {
         let bit_len = (input.len() as u128) * 8;
         let mut msg = Vec::from(input);
         msg.push(0x80);
-        while (msg.len() % 128) != 112 { msg.push(0); }
+        while (msg.len() % 128) != 112 {
+            msg.push(0);
+        }
         msg.extend_from_slice(&bit_len.to_be_bytes());
 
         // Process each 1024-bit chunk
@@ -511,5 +583,66 @@ pub mod sha512 {
             digest[i * 8..i * 8 + 8].copy_from_slice(&word.to_be_bytes());
         }
         digest
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sha1, sha224, sha256, sha384, sha512};
+    use ::sha1::{Digest as Sha1Digest, Sha1};
+    use sha2::{
+        Digest, Sha224 as Sha224Crate, Sha256 as Sha256Crate, Sha384 as Sha384Crate,
+        Sha512 as Sha512Crate,
+    };
+
+    fn to_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    const SAMPLE: &[u8] = b"The quick brown fox jumps over the lazy dog";
+
+    #[test]
+    fn sha1_matches_standard() {
+        let ours = sha1::hash(SAMPLE);
+        let mut hasher = Sha1::new();
+        hasher.update(SAMPLE);
+        let expected = hasher.finalize();
+        assert_eq!(to_hex(&ours), to_hex(&expected));
+    }
+
+    #[test]
+    fn sha224_matches_standard() {
+        let ours = sha224::hash(SAMPLE);
+        let mut hasher = Sha224Crate::new();
+        hasher.update(SAMPLE);
+        let expected = hasher.finalize();
+        assert_eq!(to_hex(&ours), to_hex(&expected));
+    }
+
+    #[test]
+    fn sha256_matches_standard() {
+        let ours = sha256::hash(SAMPLE);
+        let mut hasher = Sha256Crate::new();
+        hasher.update(SAMPLE);
+        let expected = hasher.finalize();
+        assert_eq!(to_hex(&ours), to_hex(&expected));
+    }
+
+    #[test]
+    fn sha384_matches_standard() {
+        let ours = sha384::hash(SAMPLE);
+        let mut hasher = Sha384Crate::new();
+        hasher.update(SAMPLE);
+        let expected = hasher.finalize();
+        assert_eq!(to_hex(&ours), to_hex(&expected));
+    }
+
+    #[test]
+    fn sha512_matches_standard() {
+        let ours = sha512::hash(SAMPLE);
+        let mut hasher = Sha512Crate::new();
+        hasher.update(SAMPLE);
+        let expected = hasher.finalize();
+        assert_eq!(to_hex(&ours), to_hex(&expected));
     }
 }
