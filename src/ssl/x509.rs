@@ -82,7 +82,7 @@ impl X509Certificate {
                 let mut vr = DerReader::new(Cursor::new(&first.value));
                 let version_obj = vr.read_object().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                 let version = version_obj.value.iter().fold(0, |acc, &b| (acc << 8) | (b as u32)) + 1;
-                let serial_obj = vr.read_object().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                let serial_obj = tbs_reader.read_object().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                 (version, serial_obj)
             } else {
                 (1, first)
@@ -138,14 +138,18 @@ impl X509Certificate {
 /// Parse an AlgorithmIdentifier SEQUENCE (OID + optional params) into the OID string.
 fn parse_oid_sequence(data: &[u8]) -> Result<String, String> {
     let mut rdr = DerReader::new(Cursor::new(data));
-    // 1) SEQUENCE wrapper
-    let seq = rdr.read_object().map_err(|e| e.to_string())?;
-    if seq.tag != 0x30 { return Err("Expected SEQUENCE".into()); }
-    let mut inner = DerReader::new(Cursor::new(&seq.value));
-    // 2) OID
-    let oid_obj = inner.read_object().map_err(|e| e.to_string())?;
-    if oid_obj.tag != 0x06 { return Err("Expected OID".into()); }
-    Ok(decode_oid(&oid_obj.value))
+
+    let first = rdr.read_object().map_err(|e| e.to_string())?;
+    if first.tag == 0x30 {
+        let mut inner = DerReader::new(Cursor::new(&first.value));
+        let oid_obj = inner.read_object().map_err(|e| e.to_string())?;
+        if oid_obj.tag != 0x06 { return Err("Expected OID".into()); }
+        Ok(decode_oid(&oid_obj.value))
+    } else if first.tag == 0x06 {
+        Ok(decode_oid(&first.value))
+    } else {
+        Err("Expected SEQUENCE or OID".into())
+    }
 }
 
 /// Convert DER OID bytes → "1.2.840.…" form.

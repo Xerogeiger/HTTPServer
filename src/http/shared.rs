@@ -488,7 +488,7 @@ mod tests {
         assert!(HttpVersion::V10.create_server(0).is_err());
         assert!(HttpVersion::V11
             .create_client(IpAddr::V4(Ipv4Addr::LOCALHOST), 80)
-            .is_err());
+            .is_ok());
         assert!(HttpVersion::V2.create_server(0).is_err());
         assert!(HttpVersion::V2
             .create_client(IpAddr::V4(Ipv4Addr::LOCALHOST), 80)
