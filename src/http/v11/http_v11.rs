@@ -9,7 +9,7 @@ use crate::http::shared::RequestMethod::Get;
 use crate::http::shared::{
     write_chunked, HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode,
 };
-use crate::ssl::handshake_state::server_handshake;
+use crate::ssl::handshake_state::{client_handshake, server_handshake};
 use crate::ssl::state::TlsSession;
 use std::io;
 use std::io::{BufRead, BufReader, Error, Read, Write};
@@ -17,12 +17,21 @@ use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+enum ClientStream {
+    Plain(TcpStream),
+    Tls(TlsSession),
+}
+
 pub struct HttpV11Client {
     host: IpAddr,
     port: u16,
     default_headers: Vec<(String, String)>,
-    stream: Option<TcpStream>,
+    stream: Option<ClientStream>,
     keep_alive: bool,
+    use_tls: bool,
+    
+    // Whether to add 'Connection: keep-alive' header
+    // and reuse connections
 }
 
 impl HttpV11Client {
@@ -34,26 +43,42 @@ impl HttpV11Client {
             default_headers: Vec::new(),
             stream: None,
             keep_alive: true,
+            use_tls: false,
         }
     }
 
+    pub fn enable_tls(&mut self) {
+        self.use_tls = true;
+        self.stream = None;
+    }
+
+    pub fn set_keep_alive(&mut self, val: bool) {
+        self.keep_alive = val;
+    }
+
     /// Ensure we have a live connection (or reconnect).
-    fn ensure_connection(&mut self) -> io::Result<&mut TcpStream> {
+    fn ensure_connection(&mut self) -> io::Result<()> {
         match &self.stream {
-            Some(_) if self.keep_alive => Ok(self.stream.as_mut().unwrap()),
+            Some(_) if self.keep_alive => Ok(()),
             _ => {
                 let addr = format!("{}:{}", self.host, self.port);
-                let stream = TcpStream::connect(addr)?;
-                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-                self.stream = Some(stream);
-                Ok(self.stream.as_mut().unwrap())
+                let tcp = TcpStream::connect(addr)?;
+                tcp.set_read_timeout(Some(Duration::from_secs(5)))?;
+                tcp.set_write_timeout(Some(Duration::from_secs(5)))?;
+                if self.use_tls {
+                    let mut session = TlsSession::new(tcp);
+                    client_handshake(&mut session)?;
+                    self.stream = Some(ClientStream::Tls(session));
+                } else {
+                    self.stream = Some(ClientStream::Plain(tcp));
+                }
+                Ok(())
             }
         }
     }
 
     /// Read a chunked transfer-encoded body into a Vec<u8>.
-    fn read_chunked_body(reader: &mut BufReader<&TcpStream>) -> io::Result<Vec<u8>> {
+    fn read_chunked_body<R: Read>(reader: &mut BufReader<R>) -> io::Result<Vec<u8>> {
         let mut body = Vec::new();
         loop {
             // Read the chunk-size line
@@ -109,7 +134,8 @@ impl HttpClient for HttpV11Client {
         // Mutable borrow to manage connection & write
         let mut headers = self.default_headers.clone();
         headers.push(("Host".into(), format!("{}:{}", self.host, self.port)));
-        headers.push(("Connection".into(), "keep-alive".into()));
+        let conn_val = if self.keep_alive { "keep-alive" } else { "close" };
+        headers.push(("Connection".into(), conn_val.into()));
         headers.push(("User-Agent".into(), "RustHttpClient/1.1".into()));
 
         let mut request = req.clone();
@@ -131,23 +157,42 @@ impl HttpClient for HttpV11Client {
             self.ensure_connection().map_err(|e| e.to_string())?;
         }
 
-        let mut stream = self
+        let mut connection = self
             .stream
             .take()
             .expect("stream was just set so this is safe");
 
-        stream.write_all(&raw).map_err(|e| e.to_string())?;
-        stream.flush().map_err(|e| e.to_string())?;
+        let result = match &mut connection {
+            ClientStream::Plain(stream) => {
+                stream.write_all(&raw).map_err(|e| e.to_string())?;
+                stream.flush().map_err(|e| e.to_string())?;
+                self.receive_response(stream)
+            }
+            ClientStream::Tls(session) => {
+                session.write_all(&raw).map_err(|e| e.to_string())?;
+                session.flush().map_err(|e| e.to_string())?;
+                self.receive_response_tls(session)
+            }
+        };
 
-        // Read and parse response
-        let response = self.receive_response(&stream)?;
-        // Put the stream back for keep-alive
-        self.stream = Some(stream);
-        Ok(response)
+        // Put connection back for keep-alive
+        self.stream = Some(connection);
+        result
     }
 
     fn receive_response(&self, stream: &TcpStream) -> Result<HttpResponse, String> {
         let mut reader = BufReader::new(stream);
+        self.receive_response_inner(&mut reader)
+    }
+}
+
+impl HttpV11Client {
+    fn receive_response_tls(&self, session: &mut TlsSession) -> Result<HttpResponse, String> {
+        let mut reader = BufReader::new(session);
+        self.receive_response_inner(&mut reader)
+    }
+
+    fn receive_response_inner<R: Read>(&self, reader: &mut BufReader<R>) -> Result<HttpResponse, String> {
         // 1) Status line
         let mut status_line = String::new();
         reader
@@ -197,8 +242,7 @@ impl HttpClient for HttpV11Client {
             k.eq_ignore_ascii_case("content-encoding") && v.eq_ignore_ascii_case("gzip")
         });
         if is_chunked {
-            body_bytes =
-                HttpV11Client::read_chunked_body(&mut reader).map_err(|e| e.to_string())?;
+            body_bytes = HttpV11Client::read_chunked_body(reader).map_err(|e| e.to_string())?;
         } else if let Some((_, v)) = headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
@@ -992,6 +1036,41 @@ mod tests {
         let (_, data) = session.recv().unwrap();
         let text = String::from_utf8_lossy(&data);
         assert!(text.starts_with("HTTP/1.1 200 OK"));
+
+        server.stop().unwrap();
+    }
+
+    #[test]
+    fn https_client_helper() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        struct HelloMapping;
+        impl HttpMapping for HelloMapping {
+            fn matches_url(&self, url: &str) -> bool { url == "/hi" }
+            fn matches_method(&self, method: &RequestMethod) -> bool { *method == RequestMethod::Get }
+            fn get_content_type(&self) -> ContentType { ContentType::TextPlain }
+            fn handle_request(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
+                Ok(HttpResponse::from_status(
+                    StatusCode::Ok,
+                    vec![("Content-Type".into(), ContentType::TextPlain.to_string())],
+                    Some(b"ok".to_vec()),
+                ))
+            }
+        }
+
+        let mut server = HttpV11Server::new(0, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        server.add_mapping(Box::new(HelloMapping)).unwrap();
+        server.enable_tls(TlsConfig { cert: vec![], key: vec![], ciphers: vec![] }).unwrap();
+        server.start().unwrap();
+
+        let port = server.tcp_listener.as_ref().unwrap().local_addr().unwrap().port();
+
+        let mut client = HttpV11Client::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        client.enable_tls();
+        client.set_keep_alive(false);
+        let resp = client.get("/hi").unwrap();
+        assert_eq!(resp.status.code, 200);
+        assert_eq!(resp.body.unwrap(), b"ok");
 
         server.stop().unwrap();
     }
