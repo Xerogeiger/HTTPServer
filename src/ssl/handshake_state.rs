@@ -11,6 +11,7 @@ use super::state::{TlsSession, TlsState};
 
 /// TLS record content type for handshake messages.
 const CONTENT_TYPE_HANDSHAKE: ContentType = 22;
+const CONTENT_TYPE_CHANGE_CIPHER_SPEC: ContentType = 20;
 
 /// Perform the client side of the Diffie-Hellman handshake.
 pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
@@ -29,6 +30,15 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerHello"));
     }
     let server_random = server_hello.message.clone();
+
+    // -------- Certificate --------
+    let (_, data) = session.recv()?;
+    let (cert_msg, _) = HandshakeMessage::parse(&data)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad certificate"))?;
+    if cert_msg.handshake_type != HandshakeType::Certificate {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected Certificate"));
+    }
+    // certificate bytes are in cert_msg.message but we don't verify
 
     // -------- ServerKeyExchange --------
     let (_, data) = session.recv()?;
@@ -49,6 +59,14 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
     let pub_len = u16::from_be_bytes([ske.message[idx], ske.message[idx + 1]]) as usize;
     idx += 2;
     let server_pub = BigUint::from_bytes_be(&ske.message[idx..idx + pub_len]);
+
+    // -------- ServerHelloDone --------
+    let (_, data) = session.recv()?;
+    let (shd, _) = HandshakeMessage::parse(&data)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello done"))?;
+    if shd.handshake_type != HandshakeType::ServerHelloDone {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerHelloDone"));
+    }
 
     // -------- ClientKeyExchange --------
     let dh = DiffieHellman::new(p, g);
@@ -74,9 +92,19 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
     let mut iv = [0u8; 16];
     iv.copy_from_slice(&key_block[48..64]);
 
+    // -------- ChangeCipherSpec --------
+    session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
+    session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
+
     // -------- Finished --------
     let fin = HandshakeMessage::new(HandshakeType::Finished, Vec::new());
     session.send(CONTENT_TYPE_HANDSHAKE, &fin.to_bytes())?;
+
+    // -------- Wait for Server ChangeCipherSpec --------
+    let (ct, _) = session.recv()?;
+    if ct != CONTENT_TYPE_CHANGE_CIPHER_SPEC {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ChangeCipherSpec"));
+    }
     let (_, data) = session.recv()?;
     let (fin2, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
@@ -84,12 +112,11 @@ pub fn client_handshake(session: &mut TlsSession) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected Finished"));
     }
 
-    session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
     Ok(())
 }
 
 /// Perform the server side of the Diffie-Hellman handshake.
-pub fn server_handshake(session: &mut TlsSession) -> io::Result<()> {
+pub fn server_handshake(session: &mut TlsSession, cert: &[u8]) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
 
     // -------- ClientHello --------
@@ -105,6 +132,10 @@ pub fn server_handshake(session: &mut TlsSession) -> io::Result<()> {
     let server_random = secure_random_bytes(32)?;
     let hello = HandshakeMessage::new(HandshakeType::ServerHello, server_random.clone());
     session.send(CONTENT_TYPE_HANDSHAKE, &hello.to_bytes())?;
+
+    // -------- Certificate --------
+    let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert.to_vec());
+    session.send(CONTENT_TYPE_HANDSHAKE, &cert_msg.to_bytes())?;
 
     // -------- ServerKeyExchange --------
     let mut seed = 1u64;
@@ -126,6 +157,10 @@ pub fn server_handshake(session: &mut TlsSession) -> io::Result<()> {
     payload.extend_from_slice(&pub_bytes);
     let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, payload);
     session.send(CONTENT_TYPE_HANDSHAKE, &ske.to_bytes())?;
+
+    // -------- ServerHelloDone --------
+    let shd = HandshakeMessage::new(HandshakeType::ServerHelloDone, Vec::new());
+    session.send(CONTENT_TYPE_HANDSHAKE, &shd.to_bytes())?;
 
     // -------- ClientKeyExchange --------
     let (_, data) = session.recv()?;
@@ -150,17 +185,24 @@ pub fn server_handshake(session: &mut TlsSession) -> io::Result<()> {
     let mut iv = [0u8; 16];
     iv.copy_from_slice(&key_block[48..64]);
 
-    // -------- Finished --------
+    // -------- ChangeCipherSpec --------
+    let (ct, _) = session.recv()?;
+    if ct != CONTENT_TYPE_CHANGE_CIPHER_SPEC {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ChangeCipherSpec"));
+    }
+    session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
     let (_, data) = session.recv()?;
     let (fin1, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
     if fin1.handshake_type != HandshakeType::Finished {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected Finished"));
     }
+
+    // send ChangeCipherSpec and Finished
+    session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
     let fin = HandshakeMessage::new(HandshakeType::Finished, Vec::new());
     session.send(CONTENT_TYPE_HANDSHAKE, &fin.to_bytes())?;
 
-    session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
     Ok(())
 }
 
@@ -179,7 +221,7 @@ mod tests {
         let handle = thread::spawn(move || {
             let (sock, _) = listener.accept().unwrap();
             let mut server = TlsSession::new(sock);
-            server_handshake(&mut server).unwrap();
+            server_handshake(&mut server, include_bytes!("../../tests/test.cer")).unwrap();
             let (ct, data) = server.recv().unwrap();
             assert_eq!(ct, 23);
             assert_eq!(data, b"hello");
@@ -203,7 +245,7 @@ mod tests {
         let handle = thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
             let mut server = TlsSession::new(socket);
-            server_handshake(&mut server).unwrap();
+            server_handshake(&mut server, include_bytes!("../../tests/test.cer")).unwrap();
             let mut buf = [0u8; 4];
             server.read_exact(&mut buf).unwrap();
             assert_eq!(&buf, b"ping");
