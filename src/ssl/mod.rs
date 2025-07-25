@@ -6,3 +6,4 @@ mod state;
 mod bigint;
 mod aes;
 mod rsa;
+mod dh;
