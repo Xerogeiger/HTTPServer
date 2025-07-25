@@ -42,6 +42,11 @@ impl TlsSession {
         self.state = TlsState::Encrypted;
     }
 
+    /// Update the internal TLS state machine.
+    pub fn set_state(&mut self, state: TlsState) {
+        self.state = state;
+    }
+
     /// Send a TLS record with the given `content_type` and `payload`.
     pub fn send(&mut self, content_type: ContentType, payload: &[u8]) -> std::io::Result<()> {
         let data = if self.state == TlsState::Encrypted {
