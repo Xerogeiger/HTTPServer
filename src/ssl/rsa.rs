@@ -1,5 +1,5 @@
 use crate::ssl::bigint::BigUint;
-use crate::rng::{fill_secure_random};
+use crate::ssl::rng::{fill_secure_random};
 use std::io;
 
 /// RSA public key (n, e)

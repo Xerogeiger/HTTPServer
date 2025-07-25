@@ -8,3 +8,4 @@ mod aes;
 mod rsa;
 mod dh;
 mod prf;
+mod rng;

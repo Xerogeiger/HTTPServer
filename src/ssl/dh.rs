@@ -1,5 +1,5 @@
 use crate::ssl::bigint::BigUint;
-use crate::rng::{secure_random_bytes};
+use crate::ssl::rng::{secure_random_bytes};
 use std::io;
 
 /// Simple Diffie-Hellman key exchange over a prime field.

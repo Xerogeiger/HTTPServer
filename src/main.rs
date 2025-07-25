@@ -1,12 +1,9 @@
 use std::net::IpAddr;
 use http::shared::HttpVersion::V11;
-use crate::http::server::{dir_to_mappings, FileMapping};
-use crate::http::shared::HttpVersion::V10;
-
+use crate::http::server::dir_to_mappings;
 mod http;
 mod decode;
 mod ssl;
-mod rng;
 
 fn main() {
     let mut server = V11.create_server(1234).unwrap();
