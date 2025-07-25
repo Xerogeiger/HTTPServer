@@ -586,14 +586,57 @@ pub mod sha512 {
     }
 }
 
+/// HMAC implementation supporting SHA-1 and SHA-256 sized digests.
+pub mod hmac {
+    /// Generic HMAC over hash functions with 512-bit block size.
+    ///
+    /// `hash_fn` should implement a SHA-1/SHA-256 style interface returning a
+    /// fixed-size array. The block size is assumed to be 64 bytes.
+    pub fn hmac<F, const N: usize>(hash_fn: F, key: &[u8], data: &[u8]) -> [u8; N]
+    where
+        F: Fn(&[u8]) -> [u8; N],
+    {
+        const BLOCK_SIZE: usize = 64;
+
+        // 1) Normalize key to block size
+        let mut key_block = if key.len() > BLOCK_SIZE {
+            hash_fn(key).to_vec()
+        } else {
+            key.to_vec()
+        };
+        key_block.resize(BLOCK_SIZE, 0);
+
+        // 2) Prepare inner and outer pads
+        let mut ipad = [0x36u8; BLOCK_SIZE];
+        let mut opad = [0x5cu8; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            ipad[i] ^= key_block[i];
+            opad[i] ^= key_block[i];
+        }
+
+        // 3) Hash inner pad || data
+        let mut inner = Vec::with_capacity(BLOCK_SIZE + data.len());
+        inner.extend_from_slice(&ipad);
+        inner.extend_from_slice(data);
+        let inner_hash = hash_fn(&inner);
+
+        // 4) Hash outer pad || inner_hash
+        let mut outer = Vec::with_capacity(BLOCK_SIZE + N);
+        outer.extend_from_slice(&opad);
+        outer.extend_from_slice(&inner_hash);
+        hash_fn(&outer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{sha1, sha224, sha256, sha384, sha512};
+    use super::{hmac, sha1, sha224, sha256, sha384, sha512};
     use ::sha1::{Digest as Sha1Digest, Sha1};
     use sha2::{
         Digest, Sha224 as Sha224Crate, Sha256 as Sha256Crate, Sha384 as Sha384Crate,
         Sha512 as Sha512Crate,
     };
+    use ::hmac::{Hmac, Mac};
 
     fn to_hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
@@ -643,6 +686,28 @@ mod tests {
         let mut hasher = Sha512Crate::new();
         hasher.update(SAMPLE);
         let expected = hasher.finalize();
+        assert_eq!(to_hex(&ours), to_hex(&expected));
+    }
+
+    #[test]
+    fn hmac_sha1_matches_standard() {
+        let key = b"key";
+        let ours = hmac::hmac(sha1::hash, key, SAMPLE);
+        type HmacSha1 = Hmac<Sha1>;
+        let mut mac = HmacSha1::new_from_slice(key).unwrap();
+        mac.update(SAMPLE);
+        let expected = mac.finalize().into_bytes();
+        assert_eq!(to_hex(&ours), to_hex(&expected));
+    }
+
+    #[test]
+    fn hmac_sha256_matches_standard() {
+        let key = b"key";
+        let ours = hmac::hmac(sha256::hash, key, SAMPLE);
+        type HmacSha256 = Hmac<Sha256Crate>;
+        let mut mac = HmacSha256::new_from_slice(key).unwrap();
+        mac.update(SAMPLE);
+        let expected = mac.finalize().into_bytes();
         assert_eq!(to_hex(&ours), to_hex(&expected));
     }
 }
