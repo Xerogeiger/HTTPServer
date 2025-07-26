@@ -19,12 +19,17 @@ pub struct TlsSession {
     cipher: Option<AesCipher>,
     mac_key: Vec<u8>,
     iv: [u8; 16],
+    read_cipher: Option<AesCipher>,
+    read_mac_key: Vec<u8>,
+    read_iv: [u8; 16],
     client_mac_key: Vec<u8>,
     server_mac_key: Vec<u8>,
     client_iv: [u8; 16],
     server_iv: [u8; 16],
     write_seq: u64,
     read_seq: u64,
+    write_encrypted: bool,
+    read_encrypted: bool,
 }
 
 impl Clone for TlsSession {
@@ -36,12 +41,17 @@ impl Clone for TlsSession {
             cipher: self.cipher.clone(),
             mac_key: self.mac_key.clone(),
             iv: self.iv,
+            read_cipher: self.read_cipher.clone(),
+            read_mac_key: self.read_mac_key.clone(),
+            read_iv: self.read_iv,
             client_mac_key: self.client_mac_key.clone(),
             server_mac_key: self.server_mac_key.clone(),
             client_iv: self.client_iv,
             server_iv: self.server_iv,
             write_seq: self.write_seq,
             read_seq: self.read_seq,
+            write_encrypted: self.write_encrypted,
+            read_encrypted: self.read_encrypted,
         }
     }
 }
@@ -56,23 +66,79 @@ impl TlsSession {
             cipher: None,
             mac_key: Vec::new(),
             iv: [0u8; 16],
+            read_cipher: None,
+            read_mac_key: Vec::new(),
+            read_iv: [0u8; 16],
             client_mac_key: Vec::new(),
             server_mac_key: Vec::new(),
             client_iv: [0u8; 16],
             server_iv: [0u8; 16],
             write_seq: 0,
             read_seq: 0,
+            write_encrypted: false,
+            read_encrypted: false,
         }
     }
 
     /// Enable encrypted mode using the provided cipher, MAC key and IV.
-    pub fn enable_encryption(&mut self, cipher: AesCipher, mac_key: Vec<u8>, iv: [u8; 16]) {
-        self.cipher = Some(cipher);
-        self.mac_key = mac_key;
-        self.iv = iv;
+    pub fn enable_encryption(
+        &mut self,
+        write_cipher: AesCipher,
+        write_mac_key: Vec<u8>,
+        write_iv: [u8; 16],
+        read_cipher: AesCipher,
+        read_mac_key: Vec<u8>,
+        read_iv: [u8; 16],
+    ) {
+        self.cipher = Some(write_cipher);
+        self.mac_key = write_mac_key;
+        self.iv = write_iv;
+        self.read_cipher = Some(read_cipher);
+        self.read_mac_key = read_mac_key;
+        self.read_iv = read_iv;
         self.write_seq = 0;
         self.read_seq = 0;
+        self.write_encrypted = true;
+        self.read_encrypted = true;
         self.state = TlsState::Encrypted;
+    }
+
+    /// Get the current read sequence number.
+    pub fn get_read_seq(&self) -> u64 {
+        self.read_seq
+    }
+
+    /// Manually set the read sequence number.
+    pub fn set_read_seq(&mut self, seq: u64) {
+        self.read_seq = seq;
+    }
+
+    /// Configure only the read-side encryption parameters without
+    /// switching the connection state to `Encrypted`.
+    pub fn set_read_encryption(
+        &mut self,
+        read_cipher: AesCipher,
+        read_mac_key: Vec<u8>,
+        read_iv: [u8; 16],
+    ) {
+        self.read_cipher = Some(read_cipher);
+        self.read_mac_key = read_mac_key;
+        self.read_iv = read_iv;
+        self.read_encrypted = true;
+    }
+
+    /// Configure only the write-side encryption parameters without changing
+    /// the read cipher or connection state.
+    pub fn set_write_encryption(
+        &mut self,
+        write_cipher: AesCipher,
+        write_mac_key: Vec<u8>,
+        write_iv: [u8; 16],
+    ) {
+        self.cipher = Some(write_cipher);
+        self.mac_key = write_mac_key;
+        self.iv = write_iv;
+        self.write_encrypted = true;
     }
 
     /// Store key material derived during handshake.
@@ -100,7 +166,7 @@ impl TlsSession {
 
     /// Send a TLS record with the given `content_type` and `payload`.
     pub fn send(&mut self, content_type: ContentType, payload: &[u8]) -> std::io::Result<()> {
-        let data = if self.state == TlsState::Encrypted {
+        let data = if self.write_encrypted {
             let cipher = self.cipher.as_ref().expect("cipher not set");
             let out = encrypt_record(content_type, payload, cipher, &self.mac_key, self.write_seq);
             self.write_seq = self.write_seq.wrapping_add(1);
@@ -128,9 +194,10 @@ impl TlsSession {
         })?;
         let mut payload = vec![0u8; header.length as usize];
         self.stream.read_exact(&mut payload)?;
-        if self.state == TlsState::Encrypted {
-            let cipher = self.cipher.as_ref().expect("cipher not set");
-            let record = decrypt_record(&header, &payload, cipher, &self.mac_key, self.read_seq)
+        let decrypt = self.read_encrypted;
+        if decrypt {
+            let cipher = self.read_cipher.as_ref().expect("cipher not set");
+            let record = decrypt_record(&header, &payload, cipher, &self.read_mac_key, self.read_seq)
                 .ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::InvalidData, "MAC check failed")
                 })?;
@@ -192,7 +259,14 @@ mod tests {
             let (socket, _) = listener.accept().unwrap();
             let mut server = TlsSession::new(socket);
             let cipher = AesCipher::new_128(&[0u8; 16]);
-            server.enable_encryption(cipher, b"mac-key".to_vec(), [1u8; 16]);
+            server.enable_encryption(
+                cipher.clone(),
+                b"mac-key".to_vec(),
+                [1u8; 16],
+                cipher.clone(),
+                b"mac-key".to_vec(),
+                [1u8; 16],
+            );
             let (ct, data) = server.recv().unwrap();
             assert_eq!(ct, 23);
             assert_eq!(data, b"secret");
@@ -202,7 +276,14 @@ mod tests {
         let client_socket = TcpStream::connect(addr).unwrap();
         let mut client = TlsSession::new(client_socket);
         let cipher = AesCipher::new_128(&[0u8; 16]);
-        client.enable_encryption(cipher, b"mac-key".to_vec(), [1u8; 16]);
+        client.enable_encryption(
+            cipher.clone(),
+            b"mac-key".to_vec(),
+            [1u8; 16],
+            cipher.clone(),
+            b"mac-key".to_vec(),
+            [1u8; 16],
+        );
         client.send(23, b"secret").unwrap();
         let (ct, resp) = client.recv().unwrap();
         assert_eq!(ct, 23);

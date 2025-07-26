@@ -92,7 +92,7 @@ impl AesCipher {
     }
 
     /// Decrypt CBC data without removing padding (used for test vectors)
-    fn decrypt_cbc_nopad(&self, data: &[u8], iv: &[u8; 16]) -> Vec<u8> {
+    pub fn decrypt_cbc_nopad(&self, data: &[u8], iv: &[u8; 16]) -> Vec<u8> {
         assert!(data.len() % 16 == 0);
         let mut prev = *iv;
         let mut out = Vec::with_capacity(data.len());
@@ -109,7 +109,7 @@ impl AesCipher {
     }
 
     /// Encrypt data in CBC mode without padding (used for test vectors)
-    fn encrypt_cbc_nopad(&self, data: &[u8], iv: &[u8; 16]) -> Vec<u8> {
+    pub fn encrypt_cbc_nopad(&self, data: &[u8], iv: &[u8; 16]) -> Vec<u8> {
         assert!(data.len() % 16 == 0);
         let mut prev = *iv;
         let mut out = Vec::with_capacity(data.len());

@@ -1,9 +1,6 @@
-use crate::http::server::{dir_to_mappings, TlsConfig};
-use http::shared::HttpVersion::V11;
+use HTTPServer::http::server::{dir_to_mappings, TlsConfig};
+use HTTPServer::http::shared::HttpVersion::V11;
 use std::net::IpAddr;
-mod decode;
-mod http;
-mod ssl;
 
 fn main() {
     let mut server = V11.create_server(1234).unwrap();
@@ -18,7 +15,7 @@ fn main() {
         .expect("Failed to add mappings");
 
     let cert =
-        crate::ssl::rsa::pem_to_der(include_str!("../tests/test_cert.pem")).expect("pem to der");
+        HTTPServer::ssl::rsa::pem_to_der(include_str!("../tests/test_cert.pem")).expect("pem to der");
     let key = include_bytes!("../tests/test_key.pem").to_vec();
     server
         .enable_tls(TlsConfig {
