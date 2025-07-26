@@ -22,9 +22,9 @@ const CONTENT_TYPE_CHANGE_CIPHER_SPEC: ContentType = 20;
 /// Mapping of human-readable cipher suite names to numeric codes.
 ///
 /// The codebase currently only implements a single TLS 1.2 suite using
-/// ephemeral Diffie-Hellman with RSA authentication and AES-128-CBC.
+/// ephemeral Diffie-Hellman with RSA authentication and AES-128-CBC with SHA-256.
 const SUPPORTED_CIPHER_SUITES: &[(&str, u16)] =
-    &[("TLS_DHE_RSA_WITH_AES_128_CBC_SHA", 0x0033)];
+    &[("TLS_DHE_RSA_WITH_AES_128_CBC_SHA256", 0x0067)];
 
 fn cipher_name_to_code(name: &str) -> Option<u16> {
     SUPPORTED_CIPHER_SUITES
@@ -50,7 +50,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         version: super::record::TLS_VERSION_1_2,
         random: rand_arr,
         session_id: Vec::new(),
-        cipher_suites: vec![0x0033],
+        cipher_suites: vec![0x0067],
         compression_methods: vec![0],
     };
     let hello = HandshakeMessage::new(HandshakeType::ClientHello, ch.to_bytes());
@@ -122,10 +122,12 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         signed.extend_from_slice(&server_random);
         signed.extend_from_slice(
             &ServerKeyExchangeDH {
+                hash: params.hash,
+                sign: params.sign,
                 signature: Vec::new(),
                 ..params.clone()
             }
-            .to_bytes(),
+            .to_bytes_unsigned(),
         );
         if !rsa
             .verify_pkcs1_v1_5_sha256(&signed, &params.signature)
@@ -133,6 +135,9 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "bad signature"));
         }
+    }
+    if params.hash != 4 || params.sign != 1 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported signature algorithm"));
     }
     let p = BigUint::from_bytes_be(&params.p);
     let g = BigUint::from_bytes_be(&params.g);
@@ -165,7 +170,13 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
     transcript.extend_from_slice(&cke_bytes);
 
     let shared = dh.compute_shared_secret(&priv_key, &server_pub);
-    let pre_master = shared.to_bytes_be();
+    let mut pre_master = shared.to_bytes_be();
+    let p_len = dh.p.to_bytes_be().len();
+    if pre_master.len() < p_len {
+        let mut pad = vec![0u8; p_len - pre_master.len()];
+        pad.extend_from_slice(&pre_master);
+        pre_master = pad;
+    }
     let mut seed = Vec::new();
     seed.extend_from_slice(&client_random);
     seed.extend_from_slice(&server_random);
@@ -174,24 +185,28 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
     let mut seed2 = Vec::new();
     seed2.extend_from_slice(&server_random);
     seed2.extend_from_slice(&client_random);
-    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 128);
+    // TLS 1.2 with CBC ciphers uses explicit per-record IVs, so the key block
+    // only contains MAC and encryption keys.
+    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 96);
 
     let client_mac_key = key_block[0..32].to_vec();
     let server_mac_key = key_block[32..64].to_vec();
-    let aes_key: [u8; 16] = key_block[64..80].try_into().unwrap();
-    let mut client_iv = [0u8; 16];
-    client_iv.copy_from_slice(&key_block[96..112]);
-    let mut server_iv = [0u8; 16];
-    server_iv.copy_from_slice(&key_block[112..128]);
+    let client_key: [u8; 16] = key_block[64..80].try_into().unwrap();
+    let server_key: [u8; 16] = key_block[80..96].try_into().unwrap();
+    let client_iv = [0u8; 16];
+    let server_iv = [0u8; 16];
 
     session.set_key_material(client_mac_key.clone(), server_mac_key.clone(), client_iv, server_iv);
 
     let mac_key = client_mac_key;
     let iv = client_iv;
+    let read_cipher = AesCipher::new_128(&server_key);
+    let read_mac = server_mac_key.clone();
+    let read_iv = server_iv;
 
     // -------- ChangeCipherSpec --------
     session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
-    session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
+    session.set_write_encryption(AesCipher::new_128(&client_key), mac_key, iv);
 
     // -------- Finished --------
     let handshake_hash = sha256::hash(&transcript);
@@ -210,6 +225,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
             "expected ChangeCipherSpec",
         ));
     }
+    session.set_read_encryption(read_cipher, read_mac, read_iv);
     let (_, data) = session.recv()?;
     let (fin2, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
@@ -227,6 +243,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         return Err(io::Error::new(io::ErrorKind::InvalidData, "verify_data mismatch"));
     }
     transcript.extend_from_slice(&data);
+    session.set_state(TlsState::Encrypted);
 
     Ok(())
 }
@@ -323,6 +340,8 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
         p: p_bytes,
         g: g_bytes,
         public_key: pub_bytes,
+        hash: 4,
+        sign: 1,
         signature: Vec::new(),
     };
     let rsa_key =
@@ -330,7 +349,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     let mut signed = Vec::new();
     signed.extend_from_slice(&client_random);
     signed.extend_from_slice(&server_random);
-    signed.extend_from_slice(&ske_payload.to_bytes());
+    signed.extend_from_slice(&ske_payload.to_bytes_unsigned());
     ske_payload.signature = rsa_key.sign_pkcs1_v1_5_sha256(&signed);
     let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, ske_payload.to_bytes());
     let ske_bytes = ske.to_bytes();
@@ -362,7 +381,13 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     })?;
     let client_pub = BigUint::from_bytes_be(&cke_payload.public_key);
     let shared = dh.compute_shared_secret(&priv_key, &client_pub);
-    let pre_master = shared.to_bytes_be();
+    let mut pre_master = shared.to_bytes_be();
+    let p_len = dh.p.to_bytes_be().len();
+    if pre_master.len() < p_len {
+        let mut pad = vec![0u8; p_len - pre_master.len()];
+        pad.extend_from_slice(&pre_master);
+        pre_master = pad;
+    }
     let mut seed = Vec::new();
     seed.extend_from_slice(&client_random);
     seed.extend_from_slice(&server_random);
@@ -371,20 +396,23 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     let mut seed2 = Vec::new();
     seed2.extend_from_slice(&server_random);
     seed2.extend_from_slice(&client_random);
-    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 128);
+    // As above, TLS 1.2 CBC suites do not use fixed IVs in the key block.
+    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 96);
 
     let client_mac_key = key_block[0..32].to_vec();
     let server_mac_key = key_block[32..64].to_vec();
-    let aes_key: [u8; 16] = key_block[64..80].try_into().unwrap();
-    let mut client_iv = [0u8; 16];
-    client_iv.copy_from_slice(&key_block[96..112]);
-    let mut server_iv = [0u8; 16];
-    server_iv.copy_from_slice(&key_block[112..128]);
+    let client_key: [u8; 16] = key_block[64..80].try_into().unwrap();
+    let server_key: [u8; 16] = key_block[80..96].try_into().unwrap();
+    let client_iv = [0u8; 16];
+    let server_iv = [0u8; 16];
 
     session.set_key_material(client_mac_key.clone(), server_mac_key.clone(), client_iv, server_iv);
 
-    let mac_key = client_mac_key;
-    let iv = client_iv;
+    let mac_key = server_mac_key.clone();
+    let iv = server_iv;
+    let read_cipher = AesCipher::new_128(&client_key);
+    let read_mac = client_mac_key.clone();
+    let read_iv = client_iv;
 
     // -------- ChangeCipherSpec --------
     let (ct, _) = session.recv()?;
@@ -394,7 +422,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
             "expected ChangeCipherSpec",
         ));
     }
-    session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
+    session.set_read_encryption(read_cipher, read_mac.clone(), read_iv);
     let (_, data) = session.recv()?;
     let (fin1, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
@@ -415,6 +443,11 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
 
     // send ChangeCipherSpec and Finished
     session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
+    session.set_write_encryption(
+        AesCipher::new_128(&server_key),
+        server_mac_key.clone(),
+        server_iv,
+    );
     let handshake_hash = sha256::hash(&transcript);
     let verify_data = TlsPrfSha256::derive(&master, b"server finished", &handshake_hash, 12);
     let fin_payload = Finished { verify_data };
@@ -422,6 +455,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     let fin_bytes = fin.to_bytes();
     session.send(CONTENT_TYPE_HANDSHAKE, &fin_bytes)?;
     transcript.extend_from_slice(&fin_bytes);
+    session.set_state(TlsState::Encrypted);
 
     Ok(())
 }
@@ -448,7 +482,7 @@ mod tests {
             let cfg = crate::http::server::TlsConfig {
                 cert,
                 key: key.to_vec(),
-                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA".into()],
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
             };
             server_handshake(&mut server, &cfg).unwrap();
             let (ct, data) = server.recv().unwrap();
@@ -480,7 +514,7 @@ mod tests {
             let cfg = crate::http::server::TlsConfig {
                 cert,
                 key: key.to_vec(),
-                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA".into()],
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
             };
             server_handshake(&mut server, &cfg).unwrap();
             let mut buf = [0u8; 4];

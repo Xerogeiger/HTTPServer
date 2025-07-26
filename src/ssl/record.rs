@@ -61,13 +61,19 @@ pub fn encrypt_record(
     mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     mac_input.extend_from_slice(payload);
     let mac = hmac::hmac(sha256::hash, mac_key, &mac_input);
-    let mut plain = Vec::with_capacity(payload.len() + mac.len());
+    let mut plain = Vec::with_capacity(payload.len() + mac.len() + 16);
     plain.extend_from_slice(payload);
     plain.extend_from_slice(&mac);
+    let mut pad_len = 16 - ((plain.len() + 1) % 16);
+    if pad_len == 16 {
+        pad_len = 0;
+    }
+    plain.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+    plain.push(pad_len as u8);
     // Random IV for each record
     let iv_vec = secure_random_bytes(16).expect("failed to get random iv");
     let iv: [u8; 16] = iv_vec[..].try_into().unwrap();
-    let encrypted = cipher.encrypt_cbc(&plain, &iv);
+    let encrypted = cipher.encrypt_cbc_nopad(&plain, &iv);
     let header = RecordHeader {
         content_type,
         version: TLS_VERSION_1_2,
@@ -92,7 +98,20 @@ pub fn decrypt_record(
         return None;
     }
     let iv: [u8; 16] = data[..16].try_into().unwrap();
-    let decrypted = cipher.decrypt_cbc(&data[16..], &iv)?;
+    let mut decrypted = cipher.decrypt_cbc_nopad(&data[16..], &iv);
+    if decrypted.len() < 33 {
+        return None;
+    }
+    let pad_len = *decrypted.last().unwrap() as usize;
+    if decrypted.len() < pad_len + 1 + 32 {
+        return None;
+    }
+    for b in &decrypted[decrypted.len() - pad_len - 1..decrypted.len() - 1] {
+        if *b as usize != pad_len {
+            return None;
+        }
+    }
+    decrypted.truncate(decrypted.len() - pad_len - 1);
     if decrypted.len() < 32 {
         return None;
     }

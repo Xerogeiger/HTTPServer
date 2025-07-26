@@ -230,15 +230,22 @@ impl CertificatePayload {
 }
 
 /// TLS server key exchange parameters for ephemeral Diffie-Hellman.
+///
+/// The structure includes the hash and signature algorithm identifiers as
+/// required by TLS 1.2. Only SHA-256 and RSA are supported, so the fields are
+/// fixed to those values when sending.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerKeyExchangeDH {
     pub p: Vec<u8>,
     pub g: Vec<u8>,
     pub public_key: Vec<u8>,
-    pub signature: Vec<u8>
+    pub hash: u8,
+    pub sign: u8,
+    pub signature: Vec<u8>,
 }
 
 impl ServerKeyExchangeDH {
+    /// Serialize the structure including the signature fields.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&(self.p.len() as u16).to_be_bytes());
@@ -247,10 +254,22 @@ impl ServerKeyExchangeDH {
         out.extend_from_slice(&self.g);
         out.extend_from_slice(&(self.public_key.len() as u16).to_be_bytes());
         out.extend_from_slice(&self.public_key);
-        if !self.signature.is_empty() {
-            out.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
-            out.extend_from_slice(&self.signature);
-        }
+        out.push(self.hash);
+        out.push(self.sign);
+        out.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
+        out.extend_from_slice(&self.signature);
+        out
+    }
+
+    /// Serialize without the signature components.
+    pub fn to_bytes_unsigned(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(self.p.len() as u16).to_be_bytes());
+        out.extend_from_slice(&self.p);
+        out.extend_from_slice(&(self.g.len() as u16).to_be_bytes());
+        out.extend_from_slice(&self.g);
+        out.extend_from_slice(&(self.public_key.len() as u16).to_be_bytes());
+        out.extend_from_slice(&self.public_key);
         out
     }
 
@@ -269,17 +288,18 @@ impl ServerKeyExchangeDH {
         idx += g_len;
         let pub_len = u16::from_be_bytes([data[idx], data[idx + 1]]) as usize;
         idx += 2;
-        if data.len() < idx + pub_len { return None; }
+        if data.len() < idx + pub_len + 4 { return None; }
         let public_key = data[idx..idx + pub_len].to_vec();
         idx += pub_len;
-        let mut signature = Vec::new();
-        if idx + 2 <= data.len() {
-            let sig_len = u16::from_be_bytes([data[idx], data[idx + 1]]) as usize;
-            idx += 2;
-            if data.len() < idx + sig_len { return None; }
-            signature = data[idx..idx + sig_len].to_vec();
-        }
-        Some(ServerKeyExchangeDH { p, g, public_key, signature })
+        let hash = data[idx];
+        idx += 1;
+        let sign = data[idx];
+        idx += 1;
+        let sig_len = u16::from_be_bytes([data[idx], data[idx + 1]]) as usize;
+        idx += 2;
+        if data.len() < idx + sig_len { return None; }
+        let signature = data[idx..idx + sig_len].to_vec();
+        Some(ServerKeyExchangeDH { p, g, public_key, hash, sign, signature })
     }
 }
 
@@ -333,7 +353,7 @@ mod tests {
             version: 0x0303,
             random: [1u8; 32],
             session_id: vec![1, 2, 3],
-            cipher_suites: vec![0x0033],
+            cipher_suites: vec![0x0067],
             compression_methods: vec![0],
         };
         let bytes = hello.to_bytes();
@@ -347,7 +367,7 @@ mod tests {
             version: 0x0303,
             random: [2u8; 32],
             session_id: vec![],
-            cipher_suite: 0x0033,
+            cipher_suite: 0x0067,
             compression_method: 0,
         };
         let bytes = hello.to_bytes();
