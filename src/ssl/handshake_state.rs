@@ -38,7 +38,11 @@ fn cipher_code_supported(code: u16) -> bool {
 }
 
 /// Perform the client side of the Diffie-Hellman handshake.
-pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> {
+pub fn client_handshake(
+    session: &mut TlsSession,
+    host: &str,
+    trusted_roots: &[super::x509::X509Certificate],
+) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
     let mut transcript = Vec::new();
 
@@ -93,7 +97,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         let chain = CertificateChain::parse(&payload.to_bytes())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         chain
-            .verify(host)
+            .verify(host, trusted_roots)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if let Some(cert) = chain.certificates.first() {
             server_rsa = Some(RsaPublicKey::new(
@@ -494,7 +498,12 @@ mod tests {
         });
 
         let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
-        client_handshake(&mut client, "localhost").unwrap();
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem"))
+                .unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut client, "localhost", &roots).unwrap();
         client.send(23, b"hello").unwrap();
         let (_, resp) = client.recv().unwrap();
         assert_eq!(resp, b"world");
@@ -526,7 +535,12 @@ mod tests {
         });
 
         let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
-        client_handshake(&mut client, "localhost").unwrap();
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem"))
+                .unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut client, "localhost", &roots).unwrap();
         client.write_all(b"ping").unwrap();
         let mut resp = [0u8; 4];
         client.read_exact(&mut resp).unwrap();

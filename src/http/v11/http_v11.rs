@@ -66,7 +66,12 @@ impl HttpV11Client {
                 tcp.set_write_timeout(Some(Duration::from_secs(5)))?;
                 if self.use_tls {
                     let mut session = TlsSession::new(tcp);
-                    client_handshake(&mut session, "localhost")?;
+                    let roots = vec![crate::ssl::x509::X509Certificate::parse(
+                        &crate::ssl::rsa::pem_to_der(include_str!("../../../tests/test_cert.pem"))
+                            .unwrap(),
+                    )
+                    .unwrap()];
+                    client_handshake(&mut session, "localhost", &roots)?;
                     self.stream = Some(ClientStream::Tls(session));
                 } else {
                     self.stream = Some(ClientStream::Plain(tcp));
@@ -1039,7 +1044,12 @@ mod tests {
 
         let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
         let mut session = TlsSession::new(stream);
-        client_handshake(&mut session, "localhost").unwrap();
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../../tests/test_cert.pem"))
+                .unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut session, "localhost", &roots).unwrap();
         session
             .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .unwrap();
