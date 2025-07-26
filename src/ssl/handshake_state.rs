@@ -109,21 +109,31 @@ pub fn client_handshake(
     }
     // parse and verify certificate chain
     let mut server_rsa: Option<RsaPublicKey> = None;
-    if !cert_msg.message.is_empty() {
-        use super::x509::CertificateChain;
-        let payload = CertificatePayload::parse(&cert_msg.message)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad certificate payload"))?;
-        let chain = CertificateChain::parse(&payload.to_bytes())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        chain
-            .verify(host, trusted_roots)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if let Some(cert) = chain.certificates.first() {
-            server_rsa = Some(RsaPublicKey::new(
-                cert.modulus.clone(),
-                cert.exponent.clone(),
-            ));
-        }
+    if cert_msg.message.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "empty certificate chain",
+        ));
+    }
+    use super::x509::CertificateChain;
+    let payload = CertificatePayload::parse(&cert_msg.message)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad certificate payload"))?;
+    if payload.certificates.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "empty certificate chain",
+        ));
+    }
+    let chain = CertificateChain::parse(&payload.to_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    chain
+        .verify(host, trusted_roots)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if let Some(cert) = chain.certificates.first() {
+        server_rsa = Some(RsaPublicKey::new(
+            cert.modulus.clone(),
+            cert.exponent.clone(),
+        ));
     }
 
     // -------- ServerKeyExchange --------
@@ -338,14 +348,16 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
         (cfg.cert.clone(), cfg.key.clone())
     };
 
-    let cert_payload = if !cert_bytes_raw.is_empty() {
-        CertificatePayload {
-            certificates: vec![cert_bytes_raw.clone()],
-        }
-        .to_bytes()
-    } else {
-        CertificatePayload { certificates: vec![] }.to_bytes()
-    };
+    if cert_bytes_raw.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no certificate configured",
+        ));
+    }
+    let cert_payload = CertificatePayload {
+        certificates: vec![cert_bytes_raw.clone()],
+    }
+    .to_bytes();
     let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert_payload);
     let cert_bytes = cert_msg.to_bytes();
     session.send(CONTENT_TYPE_HANDSHAKE, &cert_bytes)?;
@@ -491,7 +503,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::{self, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
     use crate::http::server::TlsConfig;
@@ -602,6 +614,82 @@ mod tests {
         )
         .unwrap()];
         client_handshake(&mut client, "localhost", &roots).unwrap();
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn server_handshake_requires_certificate() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let cfg = TlsConfig {
+                cert: Vec::new(),
+                key: include_bytes!("../../tests/test_key.pem").to_vec(),
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
+                sni: std::collections::HashMap::new(),
+            };
+            let err = server_handshake(&mut server, &cfg).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        });
+
+        // Send a minimal ClientHello to trigger the server handshake
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let rand_arr = super::random_with_timestamp().unwrap();
+        let ch = ClientHello {
+            version: crate::ssl::record::TLS_VERSION_1_2,
+            random: rand_arr,
+            session_id: Vec::new(),
+            cipher_suites: vec![0x0067],
+            compression_methods: vec![0],
+            extensions: Vec::new(),
+        };
+        let hello = HandshakeMessage::new(HandshakeType::ClientHello, ch.to_bytes());
+        client.send(super::CONTENT_TYPE_HANDSHAKE, &hello.to_bytes()).unwrap();
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn client_fails_on_empty_certificate() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            // Receive ClientHello
+            let (_, data) = server.recv().unwrap();
+            let _ = HandshakeMessage::parse(&data).unwrap();
+
+            // Send minimal ServerHello
+            let rand_arr = super::random_with_timestamp().unwrap();
+            let sh = ServerHello {
+                version: crate::ssl::record::TLS_VERSION_1_2,
+                random: rand_arr,
+                session_id: Vec::new(),
+                cipher_suite: 0x0067,
+                compression_method: 0,
+            };
+            let sh_msg = HandshakeMessage::new(HandshakeType::ServerHello, sh.to_bytes());
+            server.send(super::CONTENT_TYPE_HANDSHAKE, &sh_msg.to_bytes()).unwrap();
+
+            // Send empty Certificate message
+            let cert_payload = CertificatePayload { certificates: Vec::new() }.to_bytes();
+            let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert_payload);
+            server.send(super::CONTENT_TYPE_HANDSHAKE, &cert_msg.to_bytes()).unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap(),
+        )
+        .unwrap()];
+        let res = client_handshake(&mut client, "localhost", &roots);
+        assert!(res.is_err());
 
         handle.join().unwrap();
     }
