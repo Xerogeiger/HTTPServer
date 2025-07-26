@@ -151,11 +151,24 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
     seed.extend_from_slice(&client_random);
     seed.extend_from_slice(&server_random);
     let master = TlsPrfSha256::derive(&pre_master, b"master secret", &seed, 48);
-    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed, 64);
-    let aes_key: [u8; 16] = key_block[0..16].try_into().unwrap();
-    let mac_key = key_block[16..48].to_vec();
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&key_block[48..64]);
+
+    let mut seed2 = Vec::new();
+    seed2.extend_from_slice(&server_random);
+    seed2.extend_from_slice(&client_random);
+    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 128);
+
+    let client_mac_key = key_block[0..32].to_vec();
+    let server_mac_key = key_block[32..64].to_vec();
+    let aes_key: [u8; 16] = key_block[64..80].try_into().unwrap();
+    let mut client_iv = [0u8; 16];
+    client_iv.copy_from_slice(&key_block[96..112]);
+    let mut server_iv = [0u8; 16];
+    server_iv.copy_from_slice(&key_block[112..128]);
+
+    session.set_key_material(client_mac_key.clone(), server_mac_key.clone(), client_iv, server_iv);
+
+    let mac_key = client_mac_key;
+    let iv = client_iv;
 
     // -------- ChangeCipherSpec --------
     session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
@@ -312,11 +325,24 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
     seed.extend_from_slice(&client_random);
     seed.extend_from_slice(&server_random);
     let master = TlsPrfSha256::derive(&pre_master, b"master secret", &seed, 48);
-    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed, 64);
-    let aes_key: [u8; 16] = key_block[0..16].try_into().unwrap();
-    let mac_key = key_block[16..48].to_vec();
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&key_block[48..64]);
+
+    let mut seed2 = Vec::new();
+    seed2.extend_from_slice(&server_random);
+    seed2.extend_from_slice(&client_random);
+    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 128);
+
+    let client_mac_key = key_block[0..32].to_vec();
+    let server_mac_key = key_block[32..64].to_vec();
+    let aes_key: [u8; 16] = key_block[64..80].try_into().unwrap();
+    let mut client_iv = [0u8; 16];
+    client_iv.copy_from_slice(&key_block[96..112]);
+    let mut server_iv = [0u8; 16];
+    server_iv.copy_from_slice(&key_block[112..128]);
+
+    session.set_key_material(client_mac_key.clone(), server_mac_key.clone(), client_iv, server_iv);
+
+    let mac_key = client_mac_key;
+    let iv = client_iv;
 
     // -------- ChangeCipherSpec --------
     let (ct, _) = session.recv()?;
