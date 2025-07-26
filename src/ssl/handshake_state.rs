@@ -94,6 +94,12 @@ pub fn client_handshake(
     }
     let sh = ServerHello::parse(&server_hello.message)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello payload"))?;
+    if sh.version != super::record::TLS_VERSION_1_2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported TLS version",
+        ));
+    }
     let server_random = sh.random.to_vec();
 
     // -------- Certificate --------
@@ -307,6 +313,12 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     }
     let ch = ClientHello::parse(&client_hello.message)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client hello payload"))?;
+    if ch.version != super::record::TLS_VERSION_1_2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported TLS version",
+        ));
+    }
     let sni_host = ch.get_sni_hostname();
     let client_random = ch.random.to_vec();
 
@@ -821,6 +833,80 @@ mod tests {
         let cke_payload = ClientKeyExchangeDH { public_key: vec![1] };
         let cke = HandshakeMessage::new(HandshakeType::ClientKeyExchange, cke_payload.to_bytes());
         client.send(super::CONTENT_TYPE_HANDSHAKE, &cke.to_bytes()).unwrap();
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn client_rejects_wrong_tls_version() {
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            // Receive ClientHello
+            let data = server.recv_handshake_message().unwrap();
+            let _ = HandshakeMessage::parse(&data).unwrap();
+
+            // Send ServerHello with unsupported version
+            let rand_arr = super::random_with_timestamp().unwrap();
+            let sh = ServerHello {
+                version: 0x0301,
+                random: rand_arr,
+                session_id: Vec::new(),
+                cipher_suite: 0x0067,
+                compression_method: 0,
+            };
+            let sh_msg = HandshakeMessage::new(HandshakeType::ServerHello, sh.to_bytes());
+            server.send(super::CONTENT_TYPE_HANDSHAKE, &sh_msg.to_bytes()).unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap(),
+        )
+        .unwrap()];
+        let res = client_handshake(&mut client, "localhost", &roots);
+        assert!(res.is_err());
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn server_rejects_wrong_tls_version() {
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let cert = crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            let cfg = TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
+                sni: std::collections::HashMap::new(),
+            };
+            let res = server_handshake(&mut server, &cfg);
+            assert!(res.is_err());
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let rand_arr = super::random_with_timestamp().unwrap();
+        let ch = ClientHello {
+            version: 0x0301,
+            random: rand_arr,
+            session_id: Vec::new(),
+            cipher_suites: vec![0x0067],
+            compression_methods: vec![0],
+            extensions: Vec::new(),
+        };
+        let hello = HandshakeMessage::new(HandshakeType::ClientHello, ch.to_bytes());
+        client.send(super::CONTENT_TYPE_HANDSHAKE, &hello.to_bytes()).unwrap();
 
         handle.join().unwrap();
     }
