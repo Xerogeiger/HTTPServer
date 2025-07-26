@@ -225,7 +225,8 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
 
     // -------- ServerKeyExchange --------
     let mut seed = 1u64;
-    let p = generate_prime(32, &mut seed);
+    // use a much larger prime for stronger security
+    let p = generate_prime(2048, &mut seed);
     let g = BigUint::from_bytes_be(&[2]);
     let dh = DiffieHellman::new(p.clone(), g.clone());
     let priv_key = DiffieHellman::generate_private_key_secure(128)
@@ -370,5 +371,12 @@ mod tests {
         assert_eq!(&resp, b"pong");
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn dh_prime_size() {
+        let mut seed = 1u64;
+        let p = generate_prime(2048, &mut seed);
+        assert!(p.to_bytes_be().len() >= 256);
     }
 }

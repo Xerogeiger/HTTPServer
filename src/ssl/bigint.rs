@@ -53,7 +53,7 @@ impl BigUint {
     }
 
     /// Compute self modulo m via long division.
-    fn rem(&self, m: &BigUint) -> BigUint {
+    pub fn rem(&self, m: &BigUint) -> BigUint {
         if self.cmp(m) == Ordering::Less {
             return self.clone();
         }
@@ -218,6 +218,11 @@ impl BigUint {
             .unwrap_or(quo_limbs.len() - 1);
         let quo = quo_limbs[first_non_zero..].to_vec();
         (BigUint(quo), rem as u32)
+    }
+
+    /// Divide by a small integer, discarding the remainder.
+    pub fn div_u32(&self, rhs: u32) -> BigUint {
+        self.div_rem_u32(rhs).0
     }
 
     /// Emit big-endian bytes.
