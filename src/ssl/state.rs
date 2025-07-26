@@ -19,6 +19,8 @@ pub struct TlsSession {
     cipher: Option<AesCipher>,
     mac_key: Vec<u8>,
     iv: [u8; 16],
+    write_seq: u64,
+    read_seq: u64,
 }
 
 impl Clone for TlsSession {
@@ -30,6 +32,8 @@ impl Clone for TlsSession {
             cipher: self.cipher.clone(),
             mac_key: self.mac_key.clone(),
             iv: self.iv,
+            write_seq: self.write_seq,
+            read_seq: self.read_seq,
         }
     }
 }
@@ -44,6 +48,8 @@ impl TlsSession {
             cipher: None,
             mac_key: Vec::new(),
             iv: [0u8; 16],
+            write_seq: 0,
+            read_seq: 0,
         }
     }
 
@@ -52,6 +58,8 @@ impl TlsSession {
         self.cipher = Some(cipher);
         self.mac_key = mac_key;
         self.iv = iv;
+        self.write_seq = 0;
+        self.read_seq = 0;
         self.state = TlsState::Encrypted;
     }
 
@@ -68,7 +76,9 @@ impl TlsSession {
     pub fn send(&mut self, content_type: ContentType, payload: &[u8]) -> std::io::Result<()> {
         let data = if self.state == TlsState::Encrypted {
             let cipher = self.cipher.as_ref().expect("cipher not set");
-            encrypt_record(content_type, payload, cipher, &self.mac_key, &self.iv)
+            let out = encrypt_record(content_type, payload, cipher, &self.mac_key, self.write_seq);
+            self.write_seq = self.write_seq.wrapping_add(1);
+            out
         } else {
             let header = RecordHeader {
                 content_type,
@@ -94,10 +104,11 @@ impl TlsSession {
         self.stream.read_exact(&mut payload)?;
         if self.state == TlsState::Encrypted {
             let cipher = self.cipher.as_ref().expect("cipher not set");
-            let record = decrypt_record(&header, &payload, cipher, &self.mac_key, &self.iv)
+            let record = decrypt_record(&header, &payload, cipher, &self.mac_key, self.read_seq)
                 .ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::InvalidData, "MAC check failed")
                 })?;
+            self.read_seq = self.read_seq.wrapping_add(1);
             Ok((record.header.content_type, record.payload))
         } else {
             Ok((header.content_type, payload))

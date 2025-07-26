@@ -1,5 +1,6 @@
 use super::aes::AesCipher;
 use super::crypto::{hmac, sha256};
+use super::rng::secure_random_bytes;
 
 pub type ContentType = u8;
 
@@ -50,20 +51,31 @@ pub fn encrypt_record(
     payload: &[u8],
     cipher: &AesCipher,
     mac_key: &[u8],
-    iv: &[u8; 16],
+    seq: u64,
 ) -> Vec<u8> {
-    let mac = hmac::hmac(sha256::hash, mac_key, payload);
+    // HMAC over seq_num || header || payload as in TLS 1.2
+    let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
+    mac_input.extend_from_slice(&seq.to_be_bytes());
+    mac_input.push(content_type);
+    mac_input.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
+    mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    mac_input.extend_from_slice(payload);
+    let mac = hmac::hmac(sha256::hash, mac_key, &mac_input);
     let mut plain = Vec::with_capacity(payload.len() + mac.len());
     plain.extend_from_slice(payload);
     plain.extend_from_slice(&mac);
-    let encrypted = cipher.encrypt_cbc(&plain, iv);
+    // Random IV for each record
+    let iv_vec = secure_random_bytes(16).expect("failed to get random iv");
+    let iv: [u8; 16] = iv_vec[..].try_into().unwrap();
+    let encrypted = cipher.encrypt_cbc(&plain, &iv);
     let header = RecordHeader {
         content_type,
         version: TLS_VERSION_1_2,
-        length: encrypted.len() as u16,
+        length: (iv.len() + encrypted.len()) as u16,
     };
     let mut out = Vec::new();
     out.extend_from_slice(&header.to_bytes());
+    out.extend_from_slice(&iv);
     out.extend_from_slice(&encrypted);
     out
 }
@@ -74,16 +86,37 @@ pub fn decrypt_record(
     data: &[u8],
     cipher: &AesCipher,
     mac_key: &[u8],
-    iv: &[u8; 16],
+    seq: u64,
 ) -> Option<TlsRecord> {
-    let decrypted = cipher.decrypt_cbc(data, iv)?;
-    if decrypted.len() < 32 { return None; }
+    if data.len() < 16 {
+        return None;
+    }
+    let iv: [u8; 16] = data[..16].try_into().unwrap();
+    let decrypted = cipher.decrypt_cbc(&data[16..], &iv)?;
+    if decrypted.len() < 32 {
+        return None;
+    }
     let mac_start = decrypted.len() - 32;
     let payload = &decrypted[..mac_start];
     let mac = &decrypted[mac_start..];
-    let expected = hmac::hmac(sha256::hash, mac_key, payload);
-    if mac != expected { return None; }
-    Some(TlsRecord { header: RecordHeader { ..*header }, payload: payload.to_vec() })
+    let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
+    mac_input.extend_from_slice(&seq.to_be_bytes());
+    mac_input.push(header.content_type);
+    mac_input.extend_from_slice(&header.version.to_be_bytes());
+    mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    mac_input.extend_from_slice(payload);
+    let expected = hmac::hmac(sha256::hash, mac_key, &mac_input);
+    if mac != expected {
+        return None;
+    }
+    Some(TlsRecord {
+        header: RecordHeader {
+            content_type: header.content_type,
+            version: header.version,
+            length: payload.len() as u16,
+        },
+        payload: payload.to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -96,12 +129,11 @@ mod tests {
         let key = [0u8; 16];
         let cipher = AesCipher::new_128(&key);
         let mac_key = b"mac-key".to_vec();
-        let iv = [1u8; 16];
         let msg = b"hello world";
-        let enc = encrypt_record(23, msg, &cipher, &mac_key, &iv);
+        let enc = encrypt_record(23, msg, &cipher, &mac_key, 0);
         let header = RecordHeader::parse(&enc[..5]).unwrap();
         let body = &enc[5..];
-        let dec = decrypt_record(&header, body, &cipher, &mac_key, &iv).unwrap();
+        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0).unwrap();
         assert_eq!(dec.payload, msg);
     }
 
@@ -110,14 +142,13 @@ mod tests {
         let key = [0u8; 16];
         let cipher = AesCipher::new_128(&key);
         let mac_key = b"mac-key".to_vec();
-        let iv = [1u8; 16];
         let msg = b"hello";
-        let mut enc = encrypt_record(22, msg, &cipher, &mac_key, &iv);
+        let mut enc = encrypt_record(22, msg, &cipher, &mac_key, 0);
         // Flip a byte in ciphertext
         let last = enc.len() - 1;
         enc[last] ^= 0x01;
         let header = RecordHeader::parse(&enc[..5]).unwrap();
         let body = &enc[5..];
-        assert!(decrypt_record(&header, body, &cipher, &mac_key, &iv).is_none());
+        assert!(decrypt_record(&header, body, &cipher, &mac_key, 0).is_none());
     }
 }
