@@ -1026,7 +1026,7 @@ mod tests {
                 .unwrap(),
             key: include_bytes!("../../../tests/test_key.pem").to_vec(),
             ciphers: vec![],
-        });
+        }).expect("Failed to enable TLS");
         server.start().unwrap();
 
         let port = server

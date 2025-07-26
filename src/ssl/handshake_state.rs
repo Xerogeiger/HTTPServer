@@ -99,7 +99,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
                 signature: Vec::new(),
                 ..params.clone()
             }
-            .params_bytes(),
+            .to_bytes(),
         );
         if !rsa
             .verify_pkcs1_v1_5_sha256(&signed, &params.signature)
@@ -245,7 +245,7 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
     let mut signed = Vec::new();
     signed.extend_from_slice(&client_random);
     signed.extend_from_slice(&server_random);
-    signed.extend_from_slice(&ske_payload.params_bytes());
+    signed.extend_from_slice(&ske_payload.to_bytes());
     ske_payload.signature = rsa_key.sign_pkcs1_v1_5_sha256(&signed);
     let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, ske_payload.to_bytes());
     session.send(CONTENT_TYPE_HANDSHAKE, &ske.to_bytes())?;

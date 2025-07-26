@@ -235,6 +235,7 @@ pub struct ServerKeyExchangeDH {
     pub p: Vec<u8>,
     pub g: Vec<u8>,
     pub public_key: Vec<u8>,
+    pub signature: Vec<u8>
 }
 
 impl ServerKeyExchangeDH {
@@ -266,7 +267,15 @@ impl ServerKeyExchangeDH {
         idx += 2;
         if data.len() < idx + pub_len { return None; }
         let public_key = data[idx..idx + pub_len].to_vec();
-        Some(ServerKeyExchangeDH { p, g, public_key })
+        idx += pub_len;
+        let mut signature = Vec::new();
+        if idx + 2 <= data.len() {
+            let sig_len = u16::from_be_bytes([data[idx], data[idx + 1]]) as usize;
+            idx += 2;
+            if data.len() < idx + sig_len { return None; }
+            signature = data[idx..idx + sig_len].to_vec();
+        }
+        Some(ServerKeyExchangeDH { p, g, public_key, signature })
     }
 }
 
