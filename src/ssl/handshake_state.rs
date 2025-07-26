@@ -82,7 +82,7 @@ pub fn client_handshake(
     transcript.extend_from_slice(&hello_bytes);
 
     // -------- ServerHello --------
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     transcript.extend_from_slice(&data);
     let (server_hello, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello"))?;
@@ -97,7 +97,7 @@ pub fn client_handshake(
     let server_random = sh.random.to_vec();
 
     // -------- Certificate --------
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     transcript.extend_from_slice(&data);
     let (cert_msg, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad certificate"))?;
@@ -137,7 +137,7 @@ pub fn client_handshake(
     }
 
     // -------- ServerKeyExchange --------
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     transcript.extend_from_slice(&data);
     let (ske, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server key exchange"))?;
@@ -177,7 +177,7 @@ pub fn client_handshake(
     let server_pub = BigUint::from_bytes_be(&params.public_key);
 
     // -------- ServerHelloDone --------
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     transcript.extend_from_slice(&data);
     let (shd, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello done"))?;
@@ -252,7 +252,7 @@ pub fn client_handshake(
     transcript.extend_from_slice(&fin_bytes);
 
     // -------- Wait for Server ChangeCipherSpec --------
-    let (ct, _) = session.recv()?;
+    let (ct, _) = session.recv_record()?;
     if ct != CONTENT_TYPE_CHANGE_CIPHER_SPEC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -260,7 +260,7 @@ pub fn client_handshake(
         ));
     }
     session.set_read_encryption(read_cipher, read_mac, read_iv);
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     let (fin2, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
     if fin2.handshake_type != HandshakeType::Finished {
@@ -288,7 +288,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     let mut transcript = Vec::new();
 
     // -------- ClientHello --------
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     transcript.extend_from_slice(&data);
     let (client_hello, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client hello"))?;
@@ -403,7 +403,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     transcript.extend_from_slice(&shd_bytes);
 
     // -------- ClientKeyExchange --------
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     transcript.extend_from_slice(&data);
     let (cke, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client key exchange"))?;
@@ -455,7 +455,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     let read_iv = client_iv;
 
     // -------- ChangeCipherSpec --------
-    let (ct, _) = session.recv()?;
+    let (ct, _) = session.recv_record()?;
     if ct != CONTENT_TYPE_CHANGE_CIPHER_SPEC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -463,7 +463,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
         ));
     }
     session.set_read_encryption(read_cipher, read_mac.clone(), read_iv);
-    let (_, data) = session.recv()?;
+    let data = session.recv_handshake_message()?;
     let (fin1, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
     if fin1.handshake_type != HandshakeType::Finished {
@@ -662,7 +662,7 @@ mod tests {
             let (sock, _) = listener.accept().unwrap();
             let mut server = TlsSession::new(sock);
             // Receive ClientHello
-            let (_, data) = server.recv().unwrap();
+            let data = server.recv_handshake_message().unwrap();
             let _ = HandshakeMessage::parse(&data).unwrap();
 
             // Send minimal ServerHello
@@ -716,5 +716,64 @@ mod tests {
     fn random_bytes_not_zero() {
         let r = super::random_with_timestamp().unwrap();
         assert!(r[4..].iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn fragmented_handshake_message() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut session = TlsSession::new(sock);
+            let data = session.recv_handshake_message().unwrap();
+            let (msg, _) = HandshakeMessage::parse(&data).unwrap();
+            assert_eq!(msg.handshake_type, HandshakeType::HelloRequest);
+            assert_eq!(msg.message, b"abc");
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let msg = HandshakeMessage::new(HandshakeType::HelloRequest, b"abc".to_vec()).to_bytes();
+        use crate::ssl::record::{RecordHeader, TLS_VERSION_1_2};
+        let mut r1 = RecordHeader { content_type: 22, version: TLS_VERSION_1_2, length: 2 }.to_bytes().to_vec();
+        r1.extend_from_slice(&msg[..2]);
+        stream.write_all(&r1).unwrap();
+        let mut r2 = RecordHeader { content_type: 22, version: TLS_VERSION_1_2, length: (msg.len() - 2) as u16 }.to_bytes().to_vec();
+        r2.extend_from_slice(&msg[2..]);
+        stream.write_all(&r2).unwrap();
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn coalesced_handshake_messages() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut session = TlsSession::new(sock);
+            let d1 = session.recv_handshake_message().unwrap();
+            let (m1, _) = HandshakeMessage::parse(&d1).unwrap();
+            assert_eq!(m1.message, b"hi");
+            let d2 = session.recv_handshake_message().unwrap();
+            let (m2, _) = HandshakeMessage::parse(&d2).unwrap();
+            assert_eq!(m2.message, b"ok");
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let m1 = HandshakeMessage::new(HandshakeType::HelloRequest, b"hi".to_vec()).to_bytes();
+        let m2 = HandshakeMessage::new(HandshakeType::HelloRequest, b"ok".to_vec()).to_bytes();
+        let payload: Vec<u8> = [m1.clone(), m2.clone()].concat();
+        use crate::ssl::record::{RecordHeader, TLS_VERSION_1_2};
+        let mut r = RecordHeader { content_type: 22, version: TLS_VERSION_1_2, length: payload.len() as u16 }.to_bytes().to_vec();
+        r.extend_from_slice(&payload);
+        stream.write_all(&r).unwrap();
+
+        handle.join().unwrap();
     }
 }
