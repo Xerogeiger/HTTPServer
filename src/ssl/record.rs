@@ -124,11 +124,11 @@ pub fn decrypt_record(
     mac_key: &[u8],
     seq: u64,
 ) -> Option<TlsRecord> {
-    if data.len() < 16 {
+    if data.len() < 16 || (data.len() - 16) % 16 != 0 {
         return None;
     }
     let iv: [u8; 16] = data[..16].try_into().unwrap();
-    let decrypted = cipher.decrypt_cbc_nopad(&data[16..], &iv);
+    let decrypted = cipher.decrypt_cbc_nopad(&data[16..], &iv)?;
 
     // Constant-time padding and MAC validation
     let (pad_ok, pad_len) = check_padding(&decrypted);
@@ -204,5 +204,34 @@ mod tests {
         let header = RecordHeader::parse(&enc[..5]).unwrap();
         let body = &enc[5..];
         assert!(decrypt_record(&header, body, &cipher, &mac_key, 0).is_none());
+    }
+
+    #[test]
+    fn invalid_length_too_short() {
+        let key = [0u8; 16];
+        let cipher = AesCipher::new_128(&key);
+        let mac_key = b"mac-key".to_vec();
+        let header = RecordHeader {
+            content_type: 23,
+            version: TLS_VERSION_1_2,
+            length: 10,
+        };
+        let data = vec![0u8; 10];
+        assert!(decrypt_record(&header, &data, &cipher, &mac_key, 0).is_none());
+    }
+
+    #[test]
+    fn invalid_length_not_block_aligned() {
+        let key = [0u8; 16];
+        let cipher = AesCipher::new_128(&key);
+        let mac_key = b"mac-key".to_vec();
+        // 16 bytes IV + 5 bytes ciphertext
+        let header = RecordHeader {
+            content_type: 23,
+            version: TLS_VERSION_1_2,
+            length: 21,
+        };
+        let data = vec![0u8; 21];
+        assert!(decrypt_record(&header, &data, &cipher, &mac_key, 0).is_none());
     }
 }
