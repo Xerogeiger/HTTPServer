@@ -92,8 +92,10 @@ impl AesCipher {
     }
 
     /// Decrypt CBC data without removing padding (used for test vectors)
-    pub fn decrypt_cbc_nopad(&self, data: &[u8], iv: &[u8; 16]) -> Vec<u8> {
-        assert!(data.len() % 16 == 0);
+    pub fn decrypt_cbc_nopad(&self, data: &[u8], iv: &[u8; 16]) -> Option<Vec<u8>> {
+        if data.len() % 16 != 0 {
+            return None;
+        }
         let mut prev = *iv;
         let mut out = Vec::with_capacity(data.len());
         for chunk in data.chunks(16) {
@@ -105,7 +107,7 @@ impl AesCipher {
             out.extend_from_slice(&decrypted);
             prev = block;
         }
-        out
+        Some(out)
     }
 
     /// Encrypt data in CBC mode without padding (used for test vectors)
@@ -362,7 +364,7 @@ mod tests {
         let cipher = AesCipher::new_128(&key.try_into().unwrap());
         let ct = cipher.encrypt_cbc_nopad(&pt, &iv_arr);
         assert_eq!(ct, expected);
-        let dec = cipher.decrypt_cbc_nopad(&ct, &iv_arr);
+        let dec = cipher.decrypt_cbc_nopad(&ct, &iv_arr).unwrap();
         assert_eq!(dec, pt);
     }
 
@@ -380,7 +382,16 @@ mod tests {
         let cipher = AesCipher::new_256(&key.try_into().unwrap());
         let ct = cipher.encrypt_cbc_nopad(&pt, &iv_arr);
         assert_eq!(ct, expected);
-        let dec = cipher.decrypt_cbc_nopad(&ct, &iv_arr);
+        let dec = cipher.decrypt_cbc_nopad(&ct, &iv_arr).unwrap();
         assert_eq!(dec, pt);
+    }
+
+    #[test]
+    fn decrypt_cbc_nopad_invalid_length() {
+        let key = [0u8; 16];
+        let cipher = AesCipher::new_128(&key);
+        let iv = [0u8; 16];
+        let data = vec![0u8; 15];
+        assert!(cipher.decrypt_cbc_nopad(&data, &iv).is_none());
     }
 }
