@@ -176,6 +176,13 @@ pub fn client_handshake(
     let g = BigUint::from_bytes_be(&params.g);
     let server_pub = BigUint::from_bytes_be(&params.public_key);
 
+    if !super::dh::is_prime(&p)
+        || !super::dh::in_range_2_to_p_minus_2(&g, &p)
+        || !super::dh::in_range_2_to_p_minus_2(&server_pub, &p)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid DH parameters"));
+    }
+
     // -------- ServerHelloDone --------
     let data = session.recv_handshake_message()?;
     transcript.extend_from_slice(&data);
@@ -420,6 +427,9 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
         )
     })?;
     let client_pub = BigUint::from_bytes_be(&cke_payload.public_key);
+    if !super::dh::in_range_2_to_p_minus_2(&client_pub, &p) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid client public key"));
+    }
     let shared = dh.compute_shared_secret(&priv_key, &client_pub);
     let mut pre_master = shared.to_bytes_be();
     let p_len = dh.p.to_bytes_be().len();
@@ -690,6 +700,127 @@ mod tests {
         .unwrap()];
         let res = client_handshake(&mut client, "localhost", &roots);
         assert!(res.is_err());
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn client_rejects_invalid_dh_params() {
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            // Receive ClientHello and capture random
+            let data = server.recv_handshake_message().unwrap();
+            let (msg, _) = HandshakeMessage::parse(&data).unwrap();
+            let ch = ClientHello::parse(&msg.message).unwrap();
+            let client_random = ch.random;
+
+            // Send minimal ServerHello
+            let server_rand = super::random_with_timestamp().unwrap();
+            let sh = ServerHello {
+                version: crate::ssl::record::TLS_VERSION_1_2,
+                random: server_rand,
+                session_id: Vec::new(),
+                cipher_suite: 0x0067,
+                compression_method: 0,
+            };
+            let sh_msg = HandshakeMessage::new(HandshakeType::ServerHello, sh.to_bytes());
+            server.send(super::CONTENT_TYPE_HANDSHAKE, &sh_msg.to_bytes()).unwrap();
+
+            // Send certificate
+            let cert = crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let cert_payload = CertificatePayload { certificates: vec![cert.clone()] }.to_bytes();
+            let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert_payload);
+            server.send(super::CONTENT_TYPE_HANDSHAKE, &cert_msg.to_bytes()).unwrap();
+
+            // Construct invalid DH parameters (non-prime p)
+            let p = BigUint::from_bytes_be(&[15]);
+            let g = BigUint::from_bytes_be(&[2]);
+            let dh = DiffieHellman::new(p.clone(), g.clone());
+            let mut seed = 1u64;
+            let priv_key = DiffieHellman::generate_private_key(16, &mut seed);
+            let pub_key = dh.compute_public_key(&priv_key);
+            let mut ske_payload = ServerKeyExchangeDH {
+                p: p.to_bytes_be(),
+                g: g.to_bytes_be(),
+                public_key: pub_key.to_bytes_be(),
+                hash: 4,
+                sign: 1,
+                signature: Vec::new(),
+            };
+            let key = parse_private_key(include_bytes!("../../tests/test_key.pem")).unwrap();
+            let mut signed = Vec::new();
+            signed.extend_from_slice(&client_random);
+            signed.extend_from_slice(&server_rand);
+            signed.extend_from_slice(&ske_payload.to_bytes_unsigned());
+            ske_payload.signature = key.sign_pkcs1_v1_5_sha256(&signed);
+            let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, ske_payload.to_bytes());
+            server.send(super::CONTENT_TYPE_HANDSHAKE, &ske.to_bytes()).unwrap();
+
+            // Send ServerHelloDone
+            let shd = HandshakeMessage::new(HandshakeType::ServerHelloDone, Vec::new());
+            server.send(super::CONTENT_TYPE_HANDSHAKE, &shd.to_bytes()).unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap(),
+        )
+        .unwrap()];
+        let res = client_handshake(&mut client, "localhost", &roots);
+        assert!(res.is_err());
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn server_rejects_invalid_client_key() {
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let cert = crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            let cfg = TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
+                sni: std::collections::HashMap::new(),
+            };
+            let res = server_handshake(&mut server, &cfg);
+            assert!(res.is_err());
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let rand_arr = super::random_with_timestamp().unwrap();
+        let ch = ClientHello {
+            version: crate::ssl::record::TLS_VERSION_1_2,
+            random: rand_arr,
+            session_id: Vec::new(),
+            cipher_suites: vec![0x0067],
+            compression_methods: vec![0],
+            extensions: Vec::new(),
+        };
+        let hello = HandshakeMessage::new(HandshakeType::ClientHello, ch.to_bytes());
+        client.send(super::CONTENT_TYPE_HANDSHAKE, &hello.to_bytes()).unwrap();
+
+        // consume server hello sequence
+        let _ = client.recv_handshake_message().unwrap();
+        let _ = client.recv_handshake_message().unwrap();
+        let _ = client.recv_handshake_message().unwrap();
+        let _ = client.recv_handshake_message().unwrap();
+
+        // send invalid client public key (value 1)
+        let cke_payload = ClientKeyExchangeDH { public_key: vec![1] };
+        let cke = HandshakeMessage::new(HandshakeType::ClientKeyExchange, cke_payload.to_bytes());
+        client.send(super::CONTENT_TYPE_HANDSHAKE, &cke.to_bytes()).unwrap();
 
         handle.join().unwrap();
     }
