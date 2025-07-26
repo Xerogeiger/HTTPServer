@@ -14,6 +14,7 @@ use super::rng::secure_random_bytes;
 use super::rsa::{parse_private_key, RsaPublicKey};
 use super::state::{TlsSession, TlsState};
 use crate::http::server::TlsConfig;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// TLS record content type for handshake messages.
 const CONTENT_TYPE_HANDSHAKE: ContentType = 22;
@@ -37,6 +38,18 @@ fn cipher_code_supported(code: u16) -> bool {
     SUPPORTED_CIPHER_SUITES.iter().any(|(_, c)| *c == code)
 }
 
+/// Generate a 32-byte random value prefixed with the current Unix timestamp.
+fn random_with_timestamp() -> io::Result<[u8; 32]> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "System time before epoch"))?;
+    let mut out = [0u8; 32];
+    out[..4].copy_from_slice(&(now.as_secs() as u32).to_be_bytes());
+    let rand_tail = secure_random_bytes(28)?;
+    out[4..].copy_from_slice(&rand_tail);
+    Ok(out)
+}
+
 /// Perform the client side of the Diffie-Hellman handshake.
 pub fn client_handshake(
     session: &mut TlsSession,
@@ -47,9 +60,8 @@ pub fn client_handshake(
     let mut transcript = Vec::new();
 
     // -------- ClientHello --------
-    let client_random = secure_random_bytes(32)?;
-    let mut rand_arr = [0u8; 32];
-    rand_arr.copy_from_slice(&client_random);
+    let rand_arr = random_with_timestamp()?;
+    let client_random = rand_arr.to_vec();
     let mut sni_ext = Vec::new();
     let host_bytes = host.as_bytes();
     sni_ext.extend_from_slice(&((host_bytes.len() + 3) as u16).to_be_bytes());
@@ -305,9 +317,8 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no shared cipher"))?;
 
     // -------- ServerHello --------
-    let server_random = secure_random_bytes(32)?;
-    let mut rand_arr = [0u8; 32];
-    rand_arr.copy_from_slice(&server_random);
+    let rand_arr = random_with_timestamp()?;
+    let server_random = rand_arr.to_vec();
     let sh = ServerHello {
         version: super::record::TLS_VERSION_1_2,
         random: rand_arr,
@@ -600,5 +611,22 @@ mod tests {
         let mut seed = 1u64;
         let p = generate_prime(2048, &mut seed);
         assert!(p.to_bytes_be().len() >= 256);
+    }
+
+    #[test]
+    fn random_timestamp_prefix() {
+        let r = super::random_with_timestamp().unwrap();
+        let ts = u32::from_be_bytes([r[0], r[1], r[2], r[3]]);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        assert!(now >= ts && now - ts < 5);
+    }
+
+    #[test]
+    fn random_bytes_not_zero() {
+        let r = super::random_with_timestamp().unwrap();
+        assert!(r[4..].iter().any(|&b| b != 0));
     }
 }
