@@ -13,10 +13,29 @@ use super::record::ContentType;
 use super::rng::secure_random_bytes;
 use super::rsa::{parse_private_key, RsaPublicKey};
 use super::state::{TlsSession, TlsState};
+use crate::http::server::TlsConfig;
 
 /// TLS record content type for handshake messages.
 const CONTENT_TYPE_HANDSHAKE: ContentType = 22;
 const CONTENT_TYPE_CHANGE_CIPHER_SPEC: ContentType = 20;
+
+/// Mapping of human-readable cipher suite names to numeric codes.
+///
+/// The codebase currently only implements a single TLS 1.2 suite using
+/// ephemeral Diffie-Hellman with RSA authentication and AES-128-CBC.
+const SUPPORTED_CIPHER_SUITES: &[(&str, u16)] =
+    &[("TLS_DHE_RSA_WITH_AES_128_CBC_SHA", 0x0033)];
+
+fn cipher_name_to_code(name: &str) -> Option<u16> {
+    SUPPORTED_CIPHER_SUITES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, c)| *c)
+}
+
+fn cipher_code_supported(code: u16) -> bool {
+    SUPPORTED_CIPHER_SUITES.iter().any(|(_, c)| *c == code)
+}
 
 /// Perform the client side of the Diffie-Hellman handshake.
 pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> {
@@ -213,7 +232,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
 }
 
 /// Perform the server side of the Diffie-Hellman handshake.
-pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io::Result<()> {
+pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
     let mut transcript = Vec::new();
 
@@ -232,6 +251,29 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client hello payload"))?;
     let client_random = ch.random.to_vec();
 
+    let chosen_cipher = ch
+        .cipher_suites
+        .iter()
+        .find_map(|cs| {
+            if cfg.ciphers.is_empty() {
+                if cipher_code_supported(*cs) {
+                    Some(*cs)
+                } else {
+                    None
+                }
+            } else {
+                for name in &cfg.ciphers {
+                    if let Some(code) = cipher_name_to_code(name) {
+                        if code == *cs {
+                            return Some(code);
+                        }
+                    }
+                }
+                None
+            }
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no shared cipher"))?;
+
     // -------- ServerHello --------
     let server_random = secure_random_bytes(32)?;
     let mut rand_arr = [0u8; 32];
@@ -240,7 +282,7 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
         version: super::record::TLS_VERSION_1_2,
         random: rand_arr,
         session_id: Vec::new(),
-        cipher_suite: 0x0033,
+        cipher_suite: chosen_cipher,
         compression_method: 0,
     };
     let hello = HandshakeMessage::new(HandshakeType::ServerHello, sh.to_bytes());
@@ -249,9 +291,9 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
     transcript.extend_from_slice(&hello_bytes);
 
     // -------- Certificate --------
-    let cert_payload = if !cert.is_empty() {
+    let cert_payload = if !cfg.cert.is_empty() {
         CertificatePayload {
-            certificates: vec![cert.to_vec()],
+            certificates: vec![cfg.cert.clone()],
         }
         .to_bytes()
     } else {
@@ -284,7 +326,7 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
         signature: Vec::new(),
     };
     let rsa_key =
-        parse_private_key(key).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        parse_private_key(&cfg.key).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let mut signed = Vec::new();
     signed.extend_from_slice(&client_random);
     signed.extend_from_slice(&server_random);
@@ -390,6 +432,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
+    use crate::http::server::TlsConfig;
 
     #[test]
     fn diffie_hellman_handshake() {
@@ -402,7 +445,12 @@ mod tests {
             let cert =
                 crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
             let key = include_bytes!("../../tests/test_key.pem");
-            server_handshake(&mut server, &cert, key).unwrap();
+            let cfg = crate::http::server::TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA".into()],
+            };
+            server_handshake(&mut server, &cfg).unwrap();
             let (ct, data) = server.recv().unwrap();
             assert_eq!(ct, 23);
             assert_eq!(data, b"hello");
@@ -429,7 +477,12 @@ mod tests {
             let cert =
                 crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
             let key = include_bytes!("../../tests/test_key.pem");
-            server_handshake(&mut server, &cert, key).unwrap();
+            let cfg = crate::http::server::TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA".into()],
+            };
+            server_handshake(&mut server, &cfg).unwrap();
             let mut buf = [0u8; 4];
             server.read_exact(&mut buf).unwrap();
             assert_eq!(&buf, b"ping");

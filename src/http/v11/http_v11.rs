@@ -766,7 +766,7 @@ fn create_client(
 ) -> Result<Arc<Mutex<HttpV11ServerClient>>, String> {
     if let Some(cfg) = tls {
         let mut session = TlsSession::new(tcp_stream);
-        server_handshake(&mut session, &cfg.cert, &cfg.key).map_err(|e| e.to_string())?;
+        server_handshake(&mut session, &cfg).map_err(|e| e.to_string())?;
         let addr = session.local_addr().unwrap();
         let client = Arc::new(Mutex::new(HttpV11ServerClient::new_tls(
             addr.ip(),
