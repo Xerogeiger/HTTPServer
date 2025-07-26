@@ -16,6 +16,7 @@ pub struct TlsSession {
     stream: TcpStream,
     state: TlsState,
     buffer: Vec<u8>, // Buffer for incoming data
+    handshake_buffer: Vec<u8>,
     cipher: Option<AesCipher>,
     mac_key: Vec<u8>,
     iv: [u8; 16],
@@ -38,6 +39,7 @@ impl Clone for TlsSession {
             stream: self.stream.try_clone().expect("Failed to clone stream"),
             state: self.state,
             buffer: self.buffer.clone(),
+            handshake_buffer: self.handshake_buffer.clone(),
             cipher: self.cipher.clone(),
             mac_key: self.mac_key.clone(),
             iv: self.iv,
@@ -63,6 +65,7 @@ impl TlsSession {
             stream,
             state: TlsState::Plain,
             buffer: Vec::new(),
+            handshake_buffer: Vec::new(),
             cipher: None,
             mac_key: Vec::new(),
             iv: [0u8; 16],
@@ -185,8 +188,9 @@ impl TlsSession {
         self.stream.write_all(&data)
     }
 
-    /// Receive the next TLS record from the stream.
-    pub fn recv(&mut self) -> std::io::Result<(ContentType, Vec<u8>)> {
+    /// Receive the next TLS record from the stream without interpreting the
+    /// content type.
+    pub fn recv_record(&mut self) -> std::io::Result<(ContentType, Vec<u8>)> {
         let mut header_buf = [0u8; 5];
         self.stream.read_exact(&mut header_buf)?;
         let header = RecordHeader::parse(&header_buf).ok_or_else(|| {
@@ -205,6 +209,44 @@ impl TlsSession {
             Ok((record.header.content_type, record.payload))
         } else {
             Ok((header.content_type, payload))
+        }
+    }
+
+    /// Receive the next application data record. This behaves like the old
+    /// `recv` method and ensures the returned record carries application data.
+    pub fn recv(&mut self) -> std::io::Result<(ContentType, Vec<u8>)> {
+        let (ct, data) = self.recv_record()?;
+        if ct != 23 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unexpected content type",
+            ));
+        }
+        Ok((ct, data))
+    }
+
+    /// Receive and assemble a complete handshake message spanning one or more
+    /// records. Returns the raw handshake bytes starting with the handshake
+    /// header.
+    pub fn recv_handshake_message(&mut self) -> std::io::Result<Vec<u8>> {
+        loop {
+            if self.handshake_buffer.len() >= 4 {
+                let len = ((self.handshake_buffer[1] as usize) << 16)
+                    | ((self.handshake_buffer[2] as usize) << 8)
+                    | (self.handshake_buffer[3] as usize);
+                if self.handshake_buffer.len() >= 4 + len {
+                    let msg: Vec<u8> = self.handshake_buffer.drain(0..4 + len).collect();
+                    return Ok(msg);
+                }
+            }
+            let (ct, data) = self.recv_record()?;
+            if ct != 22 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "expected handshake record",
+                ));
+            }
+            self.handshake_buffer.extend_from_slice(&data);
         }
     }
 
