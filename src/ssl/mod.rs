@@ -9,4 +9,4 @@ mod record;
 mod rng;
 pub mod rsa;
 pub mod state;
-mod x509;
+pub mod x509;

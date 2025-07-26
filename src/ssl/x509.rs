@@ -524,8 +524,8 @@ impl CertificateChain {
         Ok(CertificateChain { certificates: certs })
     }
 
-    /// Verify the chain and hostname
-    pub fn verify(&self, hostname: &str) -> Result<(), String> {
+    /// Verify the certificate chain against `trusted_roots` and the `hostname`.
+    pub fn verify(&self, hostname: &str, trusted_roots: &[X509Certificate]) -> Result<(), String> {
         if self.certificates.is_empty() { return Err("empty chain".into()); }
         let now = SystemTime::now();
         for cert in &self.certificates {
@@ -535,6 +535,20 @@ impl CertificateChain {
             let cert = &self.certificates[i];
             let issuer = &self.certificates[i+1];
             if !cert.verify_with(issuer)? { return Err("signature check failed".into()); }
+        }
+        // ensure the last certificate in the chain is issued by a trusted root
+        let last = self.certificates.last().unwrap();
+        let mut trusted = false;
+        for root in trusted_roots {
+            if last.issuer == root.subject {
+                if last.verify_with(root)? {
+                    trusted = true;
+                    break;
+                }
+            }
+        }
+        if !trusted {
+            return Err("untrusted root".into());
         }
         if !self.certificates[0].matches_hostname(hostname) {
             return Err("hostname mismatch".into());
@@ -587,7 +601,8 @@ mod tests {
         payload.extend_from_slice(&chain);
         let chain = CertificateChain::parse(&payload).expect("parse chain");
         assert_eq!(chain.certificates.len(), 1);
-        chain.verify("localhost").expect("verify chain");
+        let roots = vec![X509Certificate::parse(include_bytes!("../../tests/test.cer")).unwrap()];
+        chain.verify("localhost", &roots).expect("verify chain");
         assert!(chain.certificates[0].matches_hostname("myapp.local"));
         assert!(!chain.certificates[0].matches_hostname("example.com"));
     }
