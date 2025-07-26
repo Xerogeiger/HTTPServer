@@ -157,7 +157,8 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
 
     // -------- ClientKeyExchange --------
     let dh = DiffieHellman::new(p, g);
-    let priv_key = DiffieHellman::generate_private_key_secure(128)
+    // Use at least a 256-bit private key for stronger forward secrecy
+    let priv_key = DiffieHellman::generate_private_key_secure(256)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let pub_key = dh.compute_public_key(&priv_key);
     let pub_bytes = pub_key.to_bytes_be();
@@ -330,7 +331,8 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     let p = generate_prime(2048, &mut seed);
     let g = BigUint::from_bytes_be(&[2]);
     let dh = DiffieHellman::new(p.clone(), g.clone());
-    let priv_key = DiffieHellman::generate_private_key_secure(128)
+    // Use at least a 256-bit private key for stronger forward secrecy
+    let priv_key = DiffieHellman::generate_private_key_secure(256)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let pub_key = dh.compute_public_key(&priv_key);
     let p_bytes = p.to_bytes_be();
