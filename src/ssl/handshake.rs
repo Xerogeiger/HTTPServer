@@ -305,6 +305,24 @@ impl ClientKeyExchangeDH {
     }
 }
 
+/// TLS Finished message payload containing the verify_data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finished {
+    pub verify_data: Vec<u8>,
+}
+
+impl Finished {
+    /// Return the serialized bytes of the verify_data.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.verify_data.clone()
+    }
+
+    /// Parse a Finished payload from bytes.
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        Some(Finished { verify_data: data.to_vec() })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

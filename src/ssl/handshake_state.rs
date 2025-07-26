@@ -4,9 +4,10 @@ use super::aes::AesCipher;
 use super::bigint::BigUint;
 use super::dh::{generate_prime, DiffieHellman};
 use super::handshake::{
-    CertificatePayload, ClientHello, ClientKeyExchangeDH, HandshakeMessage, HandshakeType,
-    ServerHello, ServerKeyExchangeDH,
+    CertificatePayload, ClientHello, ClientKeyExchangeDH, Finished, HandshakeMessage,
+    HandshakeType, ServerHello, ServerKeyExchangeDH,
 };
+use super::crypto::sha256;
 use super::prf::TlsPrfSha256;
 use super::record::ContentType;
 use super::rng::secure_random_bytes;
@@ -20,6 +21,7 @@ const CONTENT_TYPE_CHANGE_CIPHER_SPEC: ContentType = 20;
 /// Perform the client side of the Diffie-Hellman handshake.
 pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
+    let mut transcript = Vec::new();
 
     // -------- ClientHello --------
     let client_random = secure_random_bytes(32)?;
@@ -33,10 +35,13 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         compression_methods: vec![0],
     };
     let hello = HandshakeMessage::new(HandshakeType::ClientHello, ch.to_bytes());
-    session.send(CONTENT_TYPE_HANDSHAKE, &hello.to_bytes())?;
+    let hello_bytes = hello.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &hello_bytes)?;
+    transcript.extend_from_slice(&hello_bytes);
 
     // -------- ServerHello --------
     let (_, data) = session.recv()?;
+    transcript.extend_from_slice(&data);
     let (server_hello, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello"))?;
     if server_hello.handshake_type != HandshakeType::ServerHello {
@@ -51,6 +56,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
 
     // -------- Certificate --------
     let (_, data) = session.recv()?;
+    transcript.extend_from_slice(&data);
     let (cert_msg, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad certificate"))?;
     if cert_msg.handshake_type != HandshakeType::Certificate {
@@ -80,6 +86,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
 
     // -------- ServerKeyExchange --------
     let (_, data) = session.recv()?;
+    transcript.extend_from_slice(&data);
     let (ske, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server key exchange"))?;
     if ske.handshake_type != HandshakeType::ServerKeyExchange {
@@ -114,6 +121,7 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
 
     // -------- ServerHelloDone --------
     let (_, data) = session.recv()?;
+    transcript.extend_from_slice(&data);
     let (shd, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello done"))?;
     if shd.handshake_type != HandshakeType::ServerHelloDone {
@@ -133,7 +141,9 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
         public_key: pub_bytes.clone(),
     };
     let cke = HandshakeMessage::new(HandshakeType::ClientKeyExchange, cke_payload.to_bytes());
-    session.send(CONTENT_TYPE_HANDSHAKE, &cke.to_bytes())?;
+    let cke_bytes = cke.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &cke_bytes)?;
+    transcript.extend_from_slice(&cke_bytes);
 
     let shared = dh.compute_shared_secret(&priv_key, &server_pub);
     let pre_master = shared.to_bytes_be();
@@ -152,8 +162,13 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
     session.enable_encryption(AesCipher::new_128(&aes_key), mac_key, iv);
 
     // -------- Finished --------
-    let fin = HandshakeMessage::new(HandshakeType::Finished, Vec::new());
-    session.send(CONTENT_TYPE_HANDSHAKE, &fin.to_bytes())?;
+    let handshake_hash = sha256::hash(&transcript);
+    let verify_data = TlsPrfSha256::derive(&master, b"client finished", &handshake_hash, 12);
+    let fin_payload = Finished { verify_data };
+    let fin = HandshakeMessage::new(HandshakeType::Finished, fin_payload.to_bytes());
+    let fin_bytes = fin.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &fin_bytes)?;
+    transcript.extend_from_slice(&fin_bytes);
 
     // -------- Wait for Server ChangeCipherSpec --------
     let (ct, _) = session.recv()?;
@@ -172,6 +187,14 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
             "expected Finished",
         ));
     }
+    let fin2_payload = Finished::parse(&fin2.message)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished payload"))?;
+    let handshake_hash = sha256::hash(&transcript);
+    let expected = TlsPrfSha256::derive(&master, b"server finished", &handshake_hash, 12);
+    if fin2_payload.verify_data != expected {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "verify_data mismatch"));
+    }
+    transcript.extend_from_slice(&data);
 
     Ok(())
 }
@@ -179,9 +202,11 @@ pub fn client_handshake(session: &mut TlsSession, host: &str) -> io::Result<()> 
 /// Perform the server side of the Diffie-Hellman handshake.
 pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
+    let mut transcript = Vec::new();
 
     // -------- ClientHello --------
     let (_, data) = session.recv()?;
+    transcript.extend_from_slice(&data);
     let (client_hello, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client hello"))?;
     if client_hello.handshake_type != HandshakeType::ClientHello {
@@ -206,7 +231,9 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
         compression_method: 0,
     };
     let hello = HandshakeMessage::new(HandshakeType::ServerHello, sh.to_bytes());
-    session.send(CONTENT_TYPE_HANDSHAKE, &hello.to_bytes())?;
+    let hello_bytes = hello.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &hello_bytes)?;
+    transcript.extend_from_slice(&hello_bytes);
 
     // -------- Certificate --------
     let cert_payload = if !cert.is_empty() {
@@ -221,7 +248,9 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
         .to_bytes()
     };
     let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert_payload);
-    session.send(CONTENT_TYPE_HANDSHAKE, &cert_msg.to_bytes())?;
+    let cert_bytes = cert_msg.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &cert_bytes)?;
+    transcript.extend_from_slice(&cert_bytes);
 
     // -------- ServerKeyExchange --------
     let mut seed = 1u64;
@@ -249,14 +278,19 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
     signed.extend_from_slice(&ske_payload.to_bytes());
     ske_payload.signature = rsa_key.sign_pkcs1_v1_5_sha256(&signed);
     let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, ske_payload.to_bytes());
-    session.send(CONTENT_TYPE_HANDSHAKE, &ske.to_bytes())?;
+    let ske_bytes = ske.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &ske_bytes)?;
+    transcript.extend_from_slice(&ske_bytes);
 
     // -------- ServerHelloDone --------
     let shd = HandshakeMessage::new(HandshakeType::ServerHelloDone, Vec::new());
-    session.send(CONTENT_TYPE_HANDSHAKE, &shd.to_bytes())?;
+    let shd_bytes = shd.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &shd_bytes)?;
+    transcript.extend_from_slice(&shd_bytes);
 
     // -------- ClientKeyExchange --------
     let (_, data) = session.recv()?;
+    transcript.extend_from_slice(&data);
     let (cke, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client key exchange"))?;
     if cke.handshake_type != HandshakeType::ClientKeyExchange {
@@ -302,11 +336,24 @@ pub fn server_handshake(session: &mut TlsSession, cert: &[u8], key: &[u8]) -> io
             "expected Finished",
         ));
     }
+    let fin1_payload = Finished::parse(&fin1.message)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished payload"))?;
+    let handshake_hash = sha256::hash(&transcript);
+    let expected = TlsPrfSha256::derive(&master, b"client finished", &handshake_hash, 12);
+    if fin1_payload.verify_data != expected {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "verify_data mismatch"));
+    }
+    transcript.extend_from_slice(&data);
 
     // send ChangeCipherSpec and Finished
     session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
-    let fin = HandshakeMessage::new(HandshakeType::Finished, Vec::new());
-    session.send(CONTENT_TYPE_HANDSHAKE, &fin.to_bytes())?;
+    let handshake_hash = sha256::hash(&transcript);
+    let verify_data = TlsPrfSha256::derive(&master, b"server finished", &handshake_hash, 12);
+    let fin_payload = Finished { verify_data };
+    let fin = HandshakeMessage::new(HandshakeType::Finished, fin_payload.to_bytes());
+    let fin_bytes = fin.to_bytes();
+    session.send(CONTENT_TYPE_HANDSHAKE, &fin_bytes)?;
+    transcript.extend_from_slice(&fin_bytes);
 
     Ok(())
 }
