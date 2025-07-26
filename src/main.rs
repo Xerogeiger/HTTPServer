@@ -22,6 +22,7 @@ fn main() {
             cert,
             key,
             ciphers: vec![],
+            sni: std::collections::HashMap::new(),
         })
         .expect("Failed to enable TLS");
 

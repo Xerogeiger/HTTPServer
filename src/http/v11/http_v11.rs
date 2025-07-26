@@ -1031,6 +1031,7 @@ mod tests {
                 .unwrap(),
             key: include_bytes!("../../../tests/test_key.pem").to_vec(),
             ciphers: vec![],
+            sni: std::collections::HashMap::new(),
         }).expect("Failed to enable TLS");
         server.start().unwrap();
 
@@ -1094,6 +1095,7 @@ mod tests {
                     .unwrap(),
                 key: include_bytes!("../../../tests/test_key.pem").to_vec(),
                 ciphers: vec![],
+                sni: std::collections::HashMap::new(),
             })
             .unwrap();
         server.start().unwrap();

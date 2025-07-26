@@ -5,7 +5,7 @@ use super::bigint::BigUint;
 use super::dh::{generate_prime, DiffieHellman};
 use super::handshake::{
     CertificatePayload, ClientHello, ClientKeyExchangeDH, Finished, HandshakeMessage,
-    HandshakeType, ServerHello, ServerKeyExchangeDH,
+    HandshakeType, ServerHello, ServerKeyExchangeDH, EXTENSION_SERVER_NAME,
 };
 use super::crypto::sha256;
 use super::prf::TlsPrfSha256;
@@ -50,12 +50,19 @@ pub fn client_handshake(
     let client_random = secure_random_bytes(32)?;
     let mut rand_arr = [0u8; 32];
     rand_arr.copy_from_slice(&client_random);
+    let mut sni_ext = Vec::new();
+    let host_bytes = host.as_bytes();
+    sni_ext.extend_from_slice(&((host_bytes.len() + 3) as u16).to_be_bytes());
+    sni_ext.push(0); // host_name
+    sni_ext.extend_from_slice(&(host_bytes.len() as u16).to_be_bytes());
+    sni_ext.extend_from_slice(host_bytes);
     let ch = ClientHello {
         version: super::record::TLS_VERSION_1_2,
         random: rand_arr,
         session_id: Vec::new(),
         cipher_suites: vec![0x0067],
         compression_methods: vec![0],
+        extensions: vec![(super::handshake::EXTENSION_SERVER_NAME, sni_ext)],
     };
     let hello = HandshakeMessage::new(HandshakeType::ClientHello, ch.to_bytes());
     let hello_bytes = hello.to_bytes();
@@ -271,6 +278,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     }
     let ch = ClientHello::parse(&client_hello.message)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad client hello payload"))?;
+    let sni_host = ch.get_sni_hostname();
     let client_random = ch.random.to_vec();
 
     let chosen_cipher = ch
@@ -313,16 +321,19 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     transcript.extend_from_slice(&hello_bytes);
 
     // -------- Certificate --------
-    let cert_payload = if !cfg.cert.is_empty() {
+    let (cert_bytes_raw, key_bytes_raw) = if let Some(host) = sni_host.as_deref() {
+        cfg.sni.get(host).cloned().unwrap_or((cfg.cert.clone(), cfg.key.clone()))
+    } else {
+        (cfg.cert.clone(), cfg.key.clone())
+    };
+
+    let cert_payload = if !cert_bytes_raw.is_empty() {
         CertificatePayload {
-            certificates: vec![cfg.cert.clone()],
+            certificates: vec![cert_bytes_raw.clone()],
         }
         .to_bytes()
     } else {
-        CertificatePayload {
-            certificates: vec![],
-        }
-        .to_bytes()
+        CertificatePayload { certificates: vec![] }.to_bytes()
     };
     let cert_msg = HandshakeMessage::new(HandshakeType::Certificate, cert_payload);
     let cert_bytes = cert_msg.to_bytes();
@@ -351,7 +362,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
         signature: Vec::new(),
     };
     let rsa_key =
-        parse_private_key(&cfg.key).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        parse_private_key(&key_bytes_raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let mut signed = Vec::new();
     signed.extend_from_slice(&client_random);
     signed.extend_from_slice(&server_random);
@@ -489,6 +500,7 @@ mod tests {
                 cert,
                 key: key.to_vec(),
                 ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
+                sni: std::collections::HashMap::new(),
             };
             server_handshake(&mut server, &cfg).unwrap();
             let (ct, data) = server.recv().unwrap();
@@ -526,6 +538,7 @@ mod tests {
                 cert,
                 key: key.to_vec(),
                 ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
+                sni: std::collections::HashMap::new(),
             };
             server_handshake(&mut server, &cfg).unwrap();
             let mut buf = [0u8; 4];
@@ -545,6 +558,39 @@ mod tests {
         let mut resp = [0u8; 4];
         client.read_exact(&mut resp).unwrap();
         assert_eq!(&resp, b"pong");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn sni_certificate_selection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let default_cert = crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let default_key = include_bytes!("../../tests/test_key.pem").to_vec();
+            let alt_cert = crate::ssl::rsa::pem_to_der(include_str!("../../tests/localhost_cert.pem")).unwrap();
+            let alt_key = include_bytes!("../../tests/localhost_key.pem").to_vec();
+            let mut sni = std::collections::HashMap::new();
+            sni.insert("localhost".to_string(), (alt_cert, alt_key));
+            let cfg = crate::http::server::TlsConfig {
+                cert: default_cert,
+                key: default_key,
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA256".into()],
+                sni,
+            };
+            server_handshake(&mut server, &cfg).unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/localhost_cert.pem")).unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut client, "localhost", &roots).unwrap();
 
         handle.join().unwrap();
     }

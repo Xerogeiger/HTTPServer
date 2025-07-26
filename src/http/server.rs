@@ -1,6 +1,7 @@
 use crate::http::shared::{ContentType, HttpRequest, HttpResponse, HttpStatus, RequestMethod, StatusCode};
 use std::net::{IpAddr, TcpStream};
 use std::string::ToString;
+use std::collections::HashMap;
 
 pub enum ServerStatus {
     Starting,
@@ -13,6 +14,8 @@ pub struct TlsConfig {
     pub cert: Vec<u8>,
     pub key: Vec<u8>,
     pub ciphers: Vec<String>,
+    /// Optional mapping of hostname to certificate and key.
+    pub sni: std::collections::HashMap<String, (Vec<u8>, Vec<u8>)>,
 }
 
 impl Clone for ServerStatus {

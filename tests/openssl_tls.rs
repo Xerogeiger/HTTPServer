@@ -45,6 +45,7 @@ fn openssl_https_request() {
                 .unwrap(),
             key: include_bytes!("test_key.pem").to_vec(),
             ciphers: vec![],
+            sni: std::collections::HashMap::new(),
         })
         .expect("enable tls");
     server.start().unwrap();
