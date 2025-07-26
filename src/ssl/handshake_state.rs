@@ -2,7 +2,7 @@ use std::io;
 
 use super::aes::AesCipher;
 use super::bigint::BigUint;
-use super::dh::{generate_prime, DiffieHellman};
+use super::dh::{generate_prime_secure, DiffieHellman};
 use super::handshake::{
     CertificatePayload, ClientHello, ClientKeyExchangeDH, Finished, HandshakeMessage,
     HandshakeType, ServerHello, ServerKeyExchangeDH, EXTENSION_SERVER_NAME,
@@ -383,9 +383,9 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     transcript.extend_from_slice(&cert_bytes);
 
     // -------- ServerKeyExchange --------
-    let mut seed = 1u64;
     // use a much larger prime for stronger security
-    let p = generate_prime(2048, &mut seed);
+    let p = generate_prime_secure(2048)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let g = BigUint::from_bytes_be(&[2]);
     let dh = DiffieHellman::new(p.clone(), g.clone());
     // Use at least a 256-bit private key for stronger forward secrecy
@@ -753,8 +753,7 @@ mod tests {
             let p = BigUint::from_bytes_be(&[15]);
             let g = BigUint::from_bytes_be(&[2]);
             let dh = DiffieHellman::new(p.clone(), g.clone());
-            let mut seed = 1u64;
-            let priv_key = DiffieHellman::generate_private_key(16, &mut seed);
+            let priv_key = DiffieHellman::generate_private_key_secure(16).unwrap();
             let pub_key = dh.compute_public_key(&priv_key);
             let mut ske_payload = ServerKeyExchangeDH {
                 p: p.to_bytes_be(),
@@ -913,8 +912,7 @@ mod tests {
 
     #[test]
     fn dh_prime_size() {
-        let mut seed = 1u64;
-        let p = generate_prime(2048, &mut seed);
+        let p = generate_prime_secure(2048).unwrap();
         assert!(p.to_bytes_be().len() >= 256);
     }
 
