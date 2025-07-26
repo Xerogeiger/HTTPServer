@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 
 use super::aes::AesCipher;
-use super::record::{decrypt_record, encrypt_record, ContentType, RecordHeader, TLS_VERSION_1_2};
+use super::record::{decrypt_record, encrypt_record, ContentType, RecordHeader, TLS_VERSION_1_2, MacAlgorithm};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TlsState {
@@ -27,6 +27,8 @@ pub struct TlsSession {
     server_mac_key: Vec<u8>,
     client_iv: [u8; 16],
     server_iv: [u8; 16],
+    mac_alg: MacAlgorithm,
+    read_mac_alg: MacAlgorithm,
     write_seq: u64,
     read_seq: u64,
     write_encrypted: bool,
@@ -50,6 +52,8 @@ impl Clone for TlsSession {
             server_mac_key: self.server_mac_key.clone(),
             client_iv: self.client_iv,
             server_iv: self.server_iv,
+            mac_alg: self.mac_alg,
+            read_mac_alg: self.read_mac_alg,
             write_seq: self.write_seq,
             read_seq: self.read_seq,
             write_encrypted: self.write_encrypted,
@@ -76,6 +80,8 @@ impl TlsSession {
             server_mac_key: Vec::new(),
             client_iv: [0u8; 16],
             server_iv: [0u8; 16],
+            mac_alg: MacAlgorithm::Sha256,
+            read_mac_alg: MacAlgorithm::Sha256,
             write_seq: 0,
             read_seq: 0,
             write_encrypted: false,
@@ -92,6 +98,7 @@ impl TlsSession {
         read_cipher: AesCipher,
         read_mac_key: Vec<u8>,
         read_iv: [u8; 16],
+        mac_alg: MacAlgorithm,
     ) {
         self.cipher = Some(write_cipher);
         self.mac_key = write_mac_key;
@@ -99,6 +106,8 @@ impl TlsSession {
         self.read_cipher = Some(read_cipher);
         self.read_mac_key = read_mac_key;
         self.read_iv = read_iv;
+        self.mac_alg = mac_alg;
+        self.read_mac_alg = mac_alg;
         self.write_seq = 0;
         self.read_seq = 0;
         self.write_encrypted = true;
@@ -123,10 +132,12 @@ impl TlsSession {
         read_cipher: AesCipher,
         read_mac_key: Vec<u8>,
         read_iv: [u8; 16],
+        mac_alg: MacAlgorithm,
     ) {
         self.read_cipher = Some(read_cipher);
         self.read_mac_key = read_mac_key;
         self.read_iv = read_iv;
+        self.read_mac_alg = mac_alg;
         self.read_encrypted = true;
     }
 
@@ -137,10 +148,12 @@ impl TlsSession {
         write_cipher: AesCipher,
         write_mac_key: Vec<u8>,
         write_iv: [u8; 16],
+        mac_alg: MacAlgorithm,
     ) {
         self.cipher = Some(write_cipher);
         self.mac_key = write_mac_key;
         self.iv = write_iv;
+        self.mac_alg = mac_alg;
         self.write_encrypted = true;
     }
 
@@ -171,7 +184,14 @@ impl TlsSession {
     pub fn send(&mut self, content_type: ContentType, payload: &[u8]) -> std::io::Result<()> {
         let data = if self.write_encrypted {
             let cipher = self.cipher.as_ref().expect("cipher not set");
-            let out = encrypt_record(content_type, payload, cipher, &self.mac_key, self.write_seq);
+            let out = encrypt_record(
+                content_type,
+                payload,
+                cipher,
+                &self.mac_key,
+                self.write_seq,
+                self.mac_alg,
+            );
             self.write_seq = self.write_seq.wrapping_add(1);
             out
         } else {
@@ -201,7 +221,14 @@ impl TlsSession {
         let decrypt = self.read_encrypted;
         if decrypt {
             let cipher = self.read_cipher.as_ref().expect("cipher not set");
-            let record = decrypt_record(&header, &payload, cipher, &self.read_mac_key, self.read_seq)
+            let record = decrypt_record(
+                &header,
+                &payload,
+                cipher,
+                &self.read_mac_key,
+                self.read_seq,
+                self.read_mac_alg,
+            )
                 .ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::InvalidData, "MAC check failed")
                 })?;
@@ -308,6 +335,7 @@ mod tests {
                 cipher.clone(),
                 b"mac-key".to_vec(),
                 [1u8; 16],
+                MacAlgorithm::Sha256,
             );
             let (ct, data) = server.recv().unwrap();
             assert_eq!(ct, 23);
@@ -325,6 +353,7 @@ mod tests {
             cipher.clone(),
             b"mac-key".to_vec(),
             [1u8; 16],
+            MacAlgorithm::Sha256,
         );
         client.send(23, b"secret").unwrap();
         let (ct, resp) = client.recv().unwrap();

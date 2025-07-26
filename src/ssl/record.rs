@@ -1,5 +1,5 @@
 use super::aes::AesCipher;
-use super::crypto::{hmac, sha256};
+use super::crypto::{hmac, sha1, sha256};
 use super::rng::secure_random_bytes;
 
 pub type ContentType = u8;
@@ -36,6 +36,13 @@ fn check_padding(data: &[u8]) -> (bool, usize) {
 
 /// TLS version constant for TLS 1.2 used by the examples.
 pub const TLS_VERSION_1_2: u16 = 0x0303;
+
+/// Hash algorithm used for record MACs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacAlgorithm {
+    Sha256,
+    Sha1,
+}
 
 #[derive(Debug)]
 pub struct RecordHeader {
@@ -83,6 +90,7 @@ fn encrypt_record_with_padding(
     mac_key: &[u8],
     seq: u64,
     pad_len: usize,
+    mac_alg: MacAlgorithm,
 ) -> Vec<u8> {
     let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
     mac_input.extend_from_slice(&seq.to_be_bytes());
@@ -90,7 +98,10 @@ fn encrypt_record_with_padding(
     mac_input.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
     mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     mac_input.extend_from_slice(payload);
-    let mac = hmac::hmac(sha256::hash, mac_key, &mac_input);
+    let mac = match mac_alg {
+        MacAlgorithm::Sha256 => hmac::hmac::<_, 32>(sha256::hash, mac_key, &mac_input).to_vec(),
+        MacAlgorithm::Sha1 => hmac::hmac::<_, 20>(sha1::hash, mac_key, &mac_input).to_vec(),
+    };
 
     let mut plain = Vec::with_capacity(payload.len() + mac.len() + pad_len + 1);
     plain.extend_from_slice(payload);
@@ -121,6 +132,7 @@ pub fn encrypt_record(
     cipher: &AesCipher,
     mac_key: &[u8],
     seq: u64,
+    mac_alg: MacAlgorithm,
 ) -> Vec<u8> {
     // Build MAC first
     let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
@@ -129,7 +141,10 @@ pub fn encrypt_record(
     mac_input.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
     mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     mac_input.extend_from_slice(payload);
-    let mac = hmac::hmac(sha256::hash, mac_key, &mac_input);
+    let mac = match mac_alg {
+        MacAlgorithm::Sha256 => hmac::hmac::<_, 32>(sha256::hash, mac_key, &mac_input).to_vec(),
+        MacAlgorithm::Sha1 => hmac::hmac::<_, 20>(sha1::hash, mac_key, &mac_input).to_vec(),
+    };
 
     let mut plain = Vec::with_capacity(payload.len() + mac.len() + 256);
     plain.extend_from_slice(payload);
@@ -144,7 +159,7 @@ pub fn encrypt_record(
         pad_len += extra_blocks * 16;
     }
 
-    encrypt_record_with_padding(content_type, payload, cipher, mac_key, seq, pad_len)
+    encrypt_record_with_padding(content_type, payload, cipher, mac_key, seq, pad_len, mac_alg)
 }
 
 /// Decrypt a record payload and verify its MAC.
@@ -154,6 +169,7 @@ pub fn decrypt_record(
     cipher: &AesCipher,
     mac_key: &[u8],
     seq: u64,
+    mac_alg: MacAlgorithm,
 ) -> Option<TlsRecord> {
     if data.len() < 16 || (data.len() - 16) % 16 != 0 {
         return None;
@@ -163,12 +179,16 @@ pub fn decrypt_record(
 
     // Constant-time padding and MAC validation
     let (pad_ok, pad_len) = check_padding(&decrypted);
+    let mac_len = match mac_alg {
+        MacAlgorithm::Sha256 => 32,
+        MacAlgorithm::Sha1 => 20,
+    };
     let without_pad = decrypted.len().saturating_sub(pad_len + 1);
-    let has_mac = without_pad >= 32;
-    let payload_len = without_pad.saturating_sub(32);
+    let has_mac = without_pad >= mac_len;
+    let payload_len = without_pad.saturating_sub(mac_len);
 
-    let mut mac_bytes = [0u8; 32];
-    for i in 0..32 {
+    let mut mac_bytes = vec![0u8; mac_len];
+    for i in 0..mac_len {
         let idx = payload_len + i;
         if idx < decrypted.len() {
             mac_bytes[i] = decrypted[idx];
@@ -186,7 +206,10 @@ pub fn decrypt_record(
     mac_input.extend_from_slice(&header.version.to_be_bytes());
     mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     mac_input.extend_from_slice(payload);
-    let expected = hmac::hmac(sha256::hash, mac_key, &mac_input);
+    let expected = match mac_alg {
+        MacAlgorithm::Sha256 => hmac::hmac::<_, 32>(sha256::hash, mac_key, &mac_input).to_vec(),
+        MacAlgorithm::Sha1 => hmac::hmac::<_, 20>(sha1::hash, mac_key, &mac_input).to_vec(),
+    };
     let mac_ok = ct_eq(&mac_bytes, &expected);
 
     let valid = pad_ok && has_mac && mac_ok;
@@ -215,10 +238,10 @@ mod tests {
         let cipher = AesCipher::new_128(&key);
         let mac_key = b"mac-key".to_vec();
         let msg = b"hello world";
-        let enc = encrypt_record(23, msg, &cipher, &mac_key, 0);
+        let enc = encrypt_record(23, msg, &cipher, &mac_key, 0, MacAlgorithm::Sha256);
         let header = RecordHeader::parse(&enc[..5]).unwrap();
         let body = &enc[5..];
-        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0).unwrap();
+        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0, MacAlgorithm::Sha256).unwrap();
         assert_eq!(dec.payload, msg);
     }
 
@@ -228,13 +251,13 @@ mod tests {
         let cipher = AesCipher::new_128(&key);
         let mac_key = b"mac-key".to_vec();
         let msg = b"hello";
-        let mut enc = encrypt_record(22, msg, &cipher, &mac_key, 0);
+        let mut enc = encrypt_record(22, msg, &cipher, &mac_key, 0, MacAlgorithm::Sha256);
         // Flip a byte in ciphertext
         let last = enc.len() - 1;
         enc[last] ^= 0x01;
         let header = RecordHeader::parse(&enc[..5]).unwrap();
         let body = &enc[5..];
-        assert!(decrypt_record(&header, body, &cipher, &mac_key, 0).is_none());
+        assert!(decrypt_record(&header, body, &cipher, &mac_key, 0, MacAlgorithm::Sha256).is_none());
     }
 
     #[test]
@@ -248,7 +271,7 @@ mod tests {
             length: 10,
         };
         let data = vec![0u8; 10];
-        assert!(decrypt_record(&header, &data, &cipher, &mac_key, 0).is_none());
+        assert!(decrypt_record(&header, &data, &cipher, &mac_key, 0, MacAlgorithm::Sha256).is_none());
     }
 
     #[test]
@@ -263,7 +286,7 @@ mod tests {
             length: 21,
         };
         let data = vec![0u8; 21];
-        assert!(decrypt_record(&header, &data, &cipher, &mac_key, 0).is_none());
+        assert!(decrypt_record(&header, &data, &cipher, &mac_key, 0, MacAlgorithm::Sha256).is_none());
     }
 
     #[test]
@@ -274,10 +297,10 @@ mod tests {
         let msg = b"test";
         let base_pad = (16 - ((msg.len() + 32 + 1) % 16)) % 16;
         let pad_len = base_pad + 32; // add two extra blocks
-        let enc = encrypt_record_with_padding(23, msg, &cipher, &mac_key, 0, pad_len);
+        let enc = encrypt_record_with_padding(23, msg, &cipher, &mac_key, 0, pad_len, MacAlgorithm::Sha256);
         let header = RecordHeader::parse(&enc[..5]).unwrap();
         let body = &enc[5..];
-        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0).unwrap();
+        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0, MacAlgorithm::Sha256).unwrap();
         assert_eq!(dec.payload, msg);
     }
 
@@ -289,10 +312,10 @@ mod tests {
         let msg = b"abc";
         let base_pad = (16 - ((msg.len() + 32 + 1) % 16)) % 16;
         let pad_len = base_pad + 16 * ((255 - base_pad) / 16);
-        let enc = encrypt_record_with_padding(23, msg, &cipher, &mac_key, 0, pad_len);
+        let enc = encrypt_record_with_padding(23, msg, &cipher, &mac_key, 0, pad_len, MacAlgorithm::Sha256);
         let header = RecordHeader::parse(&enc[..5]).unwrap();
         let body = &enc[5..];
-        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0).unwrap();
+        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0, MacAlgorithm::Sha256).unwrap();
         assert_eq!(dec.payload, msg);
     }
 }

@@ -4,8 +4,8 @@ use super::aes::AesCipher;
 use super::bigint::BigUint;
 use super::dh::{generate_prime_secure, DiffieHellman};
 use super::handshake::{
-    CertificatePayload, ClientHello, ClientKeyExchangeDH, Finished, HandshakeMessage,
-    HandshakeType, ServerHello, ServerKeyExchangeDH, EXTENSION_SERVER_NAME,
+    CertificatePayload, ClientHello, ClientKeyExchangeDH, ClientKeyExchangeRSA, Finished,
+    HandshakeMessage, HandshakeType, ServerHello, ServerKeyExchangeDH, EXTENSION_SERVER_NAME,
 };
 use super::crypto::sha256;
 use super::prf::TlsPrfSha256;
@@ -22,10 +22,18 @@ const CONTENT_TYPE_CHANGE_CIPHER_SPEC: ContentType = 20;
 
 /// Mapping of human-readable cipher suite names to numeric codes.
 ///
-/// The codebase currently only implements a single TLS 1.2 suite using
-/// ephemeral Diffie-Hellman with RSA authentication and AES-128-CBC with SHA-256.
-const SUPPORTED_CIPHER_SUITES: &[(&str, u16)] =
-    &[("TLS_DHE_RSA_WITH_AES_128_CBC_SHA256", 0x0067)];
+/// A small selection of RFC 5246 cipher suites supported by the example code.
+/// Only the DHE_RSA variants are fully implemented.
+const SUPPORTED_CIPHER_SUITES: &[(&str, u16)] = &[
+    ("TLS_DHE_RSA_WITH_AES_128_CBC_SHA256", 0x0067),
+    ("TLS_DHE_RSA_WITH_AES_256_CBC_SHA256", 0x006B),
+    ("TLS_DHE_RSA_WITH_AES_128_CBC_SHA", 0x0033),
+    ("TLS_DHE_RSA_WITH_AES_256_CBC_SHA", 0x0039),
+    ("TLS_RSA_WITH_AES_128_CBC_SHA256", 0x003C),
+    ("TLS_RSA_WITH_AES_256_CBC_SHA256", 0x003D),
+    ("TLS_RSA_WITH_AES_128_CBC_SHA", 0x002F),
+    ("TLS_RSA_WITH_AES_256_CBC_SHA", 0x0035),
+];
 
 fn cipher_name_to_code(name: &str) -> Option<u16> {
     SUPPORTED_CIPHER_SUITES
@@ -36,6 +44,21 @@ fn cipher_name_to_code(name: &str) -> Option<u16> {
 
 fn cipher_code_supported(code: u16) -> bool {
     SUPPORTED_CIPHER_SUITES.iter().any(|(_, c)| *c == code)
+}
+
+fn suite_is_dhe(code: u16) -> bool {
+    matches!(code, 0x0067 | 0x006B | 0x0033 | 0x0039)
+}
+
+fn suite_uses_aes256(code: u16) -> bool {
+    matches!(code, 0x006B | 0x003D | 0x0039 | 0x0035)
+}
+
+fn mac_algorithm_for_suite(code: u16) -> super::record::MacAlgorithm {
+    match code {
+        0x002F | 0x0035 | 0x0033 | 0x0039 => super::record::MacAlgorithm::Sha1,
+        _ => super::record::MacAlgorithm::Sha256,
+    }
 }
 
 /// Generate a 32-byte random value prefixed with the current Unix timestamp.
@@ -50,7 +73,7 @@ fn random_with_timestamp() -> io::Result<[u8; 32]> {
     Ok(out)
 }
 
-/// Perform the client side of the Diffie-Hellman handshake.
+/// Perform the client side of the TLS handshake supporting DHE and RSA key exchange.
 pub fn client_handshake(
     session: &mut TlsSession,
     host: &str,
@@ -72,7 +95,7 @@ pub fn client_handshake(
         version: super::record::TLS_VERSION_1_2,
         random: rand_arr,
         session_id: Vec::new(),
-        cipher_suites: vec![0x0067],
+        cipher_suites: SUPPORTED_CIPHER_SUITES.iter().map(|(_, c)| *c).collect(),
         compression_methods: vec![0],
         extensions: vec![(super::handshake::EXTENSION_SERVER_NAME, sni_ext)],
     };
@@ -101,6 +124,8 @@ pub fn client_handshake(
         ));
     }
     let server_random = sh.random.to_vec();
+    let is_dhe = suite_is_dhe(sh.cipher_suite);
+    let mac_alg = mac_algorithm_for_suite(sh.cipher_suite);
 
     // -------- Certificate --------
     let data = session.recv_handshake_message()?;
@@ -142,88 +167,100 @@ pub fn client_handshake(
         ));
     }
 
-    // -------- ServerKeyExchange --------
-    let data = session.recv_handshake_message()?;
-    transcript.extend_from_slice(&data);
-    let (ske, _) = HandshakeMessage::parse(&data)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server key exchange"))?;
-    if ske.handshake_type != HandshakeType::ServerKeyExchange {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "expected ServerKeyExchange",
-        ));
-    }
-    let params = ServerKeyExchangeDH::parse(&ske.message)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad key exchange payload"))?;
-    if let Some(rsa) = &server_rsa {
-        let mut signed = Vec::new();
-        signed.extend_from_slice(&client_random);
-        signed.extend_from_slice(&server_random);
-        signed.extend_from_slice(
-            &ServerKeyExchangeDH {
-                hash: params.hash,
-                sign: params.sign,
-                signature: Vec::new(),
-                ..params.clone()
-            }
-            .to_bytes_unsigned(),
-        );
-        if !rsa
-            .verify_pkcs1_v1_5_sha256(&signed, &params.signature)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-        {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad signature"));
+    let (p, g, server_pub) = if is_dhe {
+        // -------- ServerKeyExchange --------
+        let data = session.recv_handshake_message()?;
+        transcript.extend_from_slice(&data);
+        let (ske, _) = HandshakeMessage::parse(&data)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server key exchange"))?;
+        if ske.handshake_type != HandshakeType::ServerKeyExchange {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerKeyExchange"));
         }
-    }
-    if params.hash != 4 || params.sign != 1 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported signature algorithm"));
-    }
-    let p = BigUint::from_bytes_be(&params.p);
-    let g = BigUint::from_bytes_be(&params.g);
-    let server_pub = BigUint::from_bytes_be(&params.public_key);
+        let params = ServerKeyExchangeDH::parse(&ske.message)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad key exchange payload"))?;
+        if let Some(rsa) = &server_rsa {
+            let mut signed = Vec::new();
+            signed.extend_from_slice(&client_random);
+            signed.extend_from_slice(&server_random);
+            signed.extend_from_slice(
+                &ServerKeyExchangeDH { hash: params.hash, sign: params.sign, signature: Vec::new(), ..params.clone() }.to_bytes_unsigned(),
+            );
+            if !rsa
+                .verify_pkcs1_v1_5_sha256(&signed, &params.signature)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "bad signature"));
+            }
+        }
+        if params.hash != 4 || params.sign != 1 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported signature algorithm"));
+        }
+        let p = BigUint::from_bytes_be(&params.p);
+        let g = BigUint::from_bytes_be(&params.g);
+        let server_pub = BigUint::from_bytes_be(&params.public_key);
 
-    if !super::dh::is_prime(&p)
-        || !super::dh::in_range_2_to_p_minus_2(&g, &p)
-        || !super::dh::in_range_2_to_p_minus_2(&server_pub, &p)
-    {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid DH parameters"));
-    }
+        if !super::dh::is_prime(&p)
+            || !super::dh::in_range_2_to_p_minus_2(&g, &p)
+            || !super::dh::in_range_2_to_p_minus_2(&server_pub, &p)
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid DH parameters"));
+        }
 
-    // -------- ServerHelloDone --------
-    let data = session.recv_handshake_message()?;
-    transcript.extend_from_slice(&data);
-    let (shd, _) = HandshakeMessage::parse(&data)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello done"))?;
-    if shd.handshake_type != HandshakeType::ServerHelloDone {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "expected ServerHelloDone",
-        ));
-    }
+        // -------- ServerHelloDone --------
+        let data = session.recv_handshake_message()?;
+        transcript.extend_from_slice(&data);
+        let (shd, _) = HandshakeMessage::parse(&data)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello done"))?;
+        if shd.handshake_type != HandshakeType::ServerHelloDone {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerHelloDone"));
+        }
+        (Some(p), Some(g), Some(server_pub))
+    } else {
+        // -------- ServerHelloDone --------
+        let data = session.recv_handshake_message()?;
+        transcript.extend_from_slice(&data);
+        let (shd, _) = HandshakeMessage::parse(&data)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad server hello done"))?;
+        if shd.handshake_type != HandshakeType::ServerHelloDone {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "expected ServerHelloDone"));
+        }
+        (None, None, None)
+    };
 
     // -------- ClientKeyExchange --------
-    let dh = DiffieHellman::new(p, g);
-    // Use at least a 256-bit private key for stronger forward secrecy
-    let priv_key = DiffieHellman::generate_private_key_secure(256)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    let pub_key = dh.compute_public_key(&priv_key);
-    let pub_bytes = pub_key.to_bytes_be();
-    let cke_payload = ClientKeyExchangeDH {
-        public_key: pub_bytes.clone(),
-    };
-    let cke = HandshakeMessage::new(HandshakeType::ClientKeyExchange, cke_payload.to_bytes());
-    let cke_bytes = cke.to_bytes();
-    session.send(CONTENT_TYPE_HANDSHAKE, &cke_bytes)?;
-    transcript.extend_from_slice(&cke_bytes);
+    let pre_master = if is_dhe {
+        let dh = DiffieHellman::new(p.unwrap(), g.unwrap());
+        let priv_key = DiffieHellman::generate_private_key_secure(256)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let pub_key = dh.compute_public_key(&priv_key);
+        let pub_bytes = pub_key.to_bytes_be();
+        let cke_payload = ClientKeyExchangeDH { public_key: pub_bytes.clone() };
+        let cke = HandshakeMessage::new(HandshakeType::ClientKeyExchange, cke_payload.to_bytes());
+        let cke_bytes = cke.to_bytes();
+        session.send(CONTENT_TYPE_HANDSHAKE, &cke_bytes)?;
+        transcript.extend_from_slice(&cke_bytes);
 
-    let shared = dh.compute_shared_secret(&priv_key, &server_pub);
-    let mut pre_master = shared.to_bytes_be();
-    let p_len = dh.p.to_bytes_be().len();
-    if pre_master.len() < p_len {
-        let mut pad = vec![0u8; p_len - pre_master.len()];
-        pad.extend_from_slice(&pre_master);
-        pre_master = pad;
-    }
+        let shared = dh.compute_shared_secret(&priv_key, &server_pub.unwrap());
+        let mut pre_master = shared.to_bytes_be();
+        let p_len = dh.p.to_bytes_be().len();
+        if pre_master.len() < p_len {
+            let mut pad = vec![0u8; p_len - pre_master.len()];
+            pad.extend_from_slice(&pre_master);
+            pre_master = pad;
+        }
+        pre_master
+    } else {
+        let rsa = server_rsa.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing RSA key"))?;
+        let mut pre_master = Vec::with_capacity(48);
+        pre_master.extend_from_slice(&super::record::TLS_VERSION_1_2.to_be_bytes());
+        pre_master.extend_from_slice(&secure_random_bytes(46)?);
+        let encrypted = rsa.encrypt_pkcs1_v1_5(&pre_master).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let cke = HandshakeMessage::new(HandshakeType::ClientKeyExchange, ClientKeyExchangeRSA { encrypted }.to_bytes());
+        let bytes = cke.to_bytes();
+        session.send(CONTENT_TYPE_HANDSHAKE, &bytes)?;
+        transcript.extend_from_slice(&bytes);
+        pre_master
+    };
     let mut seed = Vec::new();
     seed.extend_from_slice(&client_random);
     seed.extend_from_slice(&server_random);
@@ -233,13 +270,16 @@ pub fn client_handshake(
     seed2.extend_from_slice(&server_random);
     seed2.extend_from_slice(&client_random);
     // TLS 1.2 with CBC ciphers uses explicit per-record IVs, so the key block
-    // only contains MAC and encryption keys.
-    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 96);
+    // only contains MAC and encryption keys. Key and MAC sizes depend on suite.
+    let key_len = if suite_uses_aes256(sh.cipher_suite) { 32 } else { 16 };
+    let mac_len = if mac_alg == super::record::MacAlgorithm::Sha1 { 20 } else { 32 };
+    let block_len = mac_len * 2 + key_len * 2;
+    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, block_len);
 
-    let client_mac_key = key_block[0..32].to_vec();
-    let server_mac_key = key_block[32..64].to_vec();
-    let client_key: [u8; 16] = key_block[64..80].try_into().unwrap();
-    let server_key: [u8; 16] = key_block[80..96].try_into().unwrap();
+    let client_mac_key = key_block[0..mac_len].to_vec();
+    let server_mac_key = key_block[mac_len..mac_len * 2].to_vec();
+    let client_key = &key_block[mac_len * 2..mac_len * 2 + key_len];
+    let server_key = &key_block[mac_len * 2 + key_len..mac_len * 2 + 2 * key_len];
     let client_iv = [0u8; 16];
     let server_iv = [0u8; 16];
 
@@ -247,13 +287,30 @@ pub fn client_handshake(
 
     let mac_key = client_mac_key;
     let iv = client_iv;
-    let read_cipher = AesCipher::new_128(&server_key);
+    let read_cipher = if key_len == 32 {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(server_key);
+        AesCipher::new_256(&k)
+    } else {
+        let mut k = [0u8; 16];
+        k.copy_from_slice(server_key);
+        AesCipher::new_128(&k)
+    };
     let read_mac = server_mac_key.clone();
     let read_iv = server_iv;
 
     // -------- ChangeCipherSpec --------
     session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
-    session.set_write_encryption(AesCipher::new_128(&client_key), mac_key, iv);
+    let write_cipher = if key_len == 32 {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(client_key);
+        AesCipher::new_256(&k)
+    } else {
+        let mut k = [0u8; 16];
+        k.copy_from_slice(client_key);
+        AesCipher::new_128(&k)
+    };
+    session.set_write_encryption(write_cipher, mac_key, iv, mac_alg);
 
     // -------- Finished --------
     let handshake_hash = sha256::hash(&transcript);
@@ -272,7 +329,7 @@ pub fn client_handshake(
             "expected ChangeCipherSpec",
         ));
     }
-    session.set_read_encryption(read_cipher, read_mac, read_iv);
+    session.set_read_encryption(read_cipher, read_mac, read_iv, mac_alg);
     let data = session.recv_handshake_message()?;
     let (fin2, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
@@ -295,7 +352,7 @@ pub fn client_handshake(
     Ok(())
 }
 
-/// Perform the server side of the Diffie-Hellman handshake.
+/// Perform the server side of the TLS handshake supporting DHE and RSA key exchange.
 pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result<()> {
     session.set_state(TlsState::Handshake);
     let mut transcript = Vec::new();
@@ -348,6 +405,8 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     // -------- ServerHello --------
     let rand_arr = random_with_timestamp()?;
     let server_random = rand_arr.to_vec();
+    let is_dhe = suite_is_dhe(chosen_cipher);
+    let mac_alg = mac_algorithm_for_suite(chosen_cipher);
     let sh = ServerHello {
         version: super::record::TLS_VERSION_1_2,
         random: rand_arr,
@@ -382,44 +441,48 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     session.send(CONTENT_TYPE_HANDSHAKE, &cert_bytes)?;
     transcript.extend_from_slice(&cert_bytes);
 
-    // -------- ServerKeyExchange --------
-    // use a much larger prime for stronger security
-    let p = generate_prime_secure(2048)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    let g = BigUint::from_bytes_be(&[2]);
-    let dh = DiffieHellman::new(p.clone(), g.clone());
-    // Use at least a 256-bit private key for stronger forward secrecy
-    let priv_key = DiffieHellman::generate_private_key_secure(256)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    let pub_key = dh.compute_public_key(&priv_key);
-    let p_bytes = p.to_bytes_be();
-    let g_bytes = g.to_bytes_be();
-    let pub_bytes = pub_key.to_bytes_be();
-    let mut ske_payload = ServerKeyExchangeDH {
-        p: p_bytes,
-        g: g_bytes,
-        public_key: pub_bytes,
-        hash: 4,
-        sign: 1,
-        signature: Vec::new(),
-    };
-    let rsa_key =
-        parse_private_key(&key_bytes_raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let mut signed = Vec::new();
-    signed.extend_from_slice(&client_random);
-    signed.extend_from_slice(&server_random);
-    signed.extend_from_slice(&ske_payload.to_bytes_unsigned());
-    ske_payload.signature = rsa_key.sign_pkcs1_v1_5_sha256(&signed);
-    let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, ske_payload.to_bytes());
-    let ske_bytes = ske.to_bytes();
-    session.send(CONTENT_TYPE_HANDSHAKE, &ske_bytes)?;
-    transcript.extend_from_slice(&ske_bytes);
+    let (dh, priv_key) = if is_dhe {
+        // -------- ServerKeyExchange --------
+        let p = generate_prime_secure(2048).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let g = BigUint::from_bytes_be(&[2]);
+        let dh = DiffieHellman::new(p.clone(), g.clone());
+        let priv_key = DiffieHellman::generate_private_key_secure(256)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let pub_key = dh.compute_public_key(&priv_key);
+        let mut ske_payload = ServerKeyExchangeDH {
+            p: p.to_bytes_be(),
+            g: g.to_bytes_be(),
+            public_key: pub_key.to_bytes_be(),
+            hash: 4,
+            sign: 1,
+            signature: Vec::new(),
+        };
+        let rsa_key = parse_private_key(&key_bytes_raw)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut signed = Vec::new();
+        signed.extend_from_slice(&client_random);
+        signed.extend_from_slice(&server_random);
+        signed.extend_from_slice(&ske_payload.to_bytes_unsigned());
+        ske_payload.signature = rsa_key.sign_pkcs1_v1_5_sha256(&signed);
+        let ske = HandshakeMessage::new(HandshakeType::ServerKeyExchange, ske_payload.to_bytes());
+        let ske_bytes = ske.to_bytes();
+        session.send(CONTENT_TYPE_HANDSHAKE, &ske_bytes)?;
+        transcript.extend_from_slice(&ske_bytes);
 
-    // -------- ServerHelloDone --------
-    let shd = HandshakeMessage::new(HandshakeType::ServerHelloDone, Vec::new());
-    let shd_bytes = shd.to_bytes();
-    session.send(CONTENT_TYPE_HANDSHAKE, &shd_bytes)?;
-    transcript.extend_from_slice(&shd_bytes);
+        // -------- ServerHelloDone --------
+        let shd = HandshakeMessage::new(HandshakeType::ServerHelloDone, Vec::new());
+        let shd_bytes = shd.to_bytes();
+        session.send(CONTENT_TYPE_HANDSHAKE, &shd_bytes)?;
+        transcript.extend_from_slice(&shd_bytes);
+        (Some(dh), Some(priv_key))
+    } else {
+        // -------- ServerHelloDone --------
+        let shd = HandshakeMessage::new(HandshakeType::ServerHelloDone, Vec::new());
+        let shd_bytes = shd.to_bytes();
+        session.send(CONTENT_TYPE_HANDSHAKE, &shd_bytes)?;
+        transcript.extend_from_slice(&shd_bytes);
+        (None, None)
+    };
 
     // -------- ClientKeyExchange --------
     let data = session.recv_handshake_message()?;
@@ -432,24 +495,43 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
             "expected ClientKeyExchange",
         ));
     }
-    let cke_payload = ClientKeyExchangeDH::parse(&cke.message).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bad client key exchange payload",
-        )
-    })?;
-    let client_pub = BigUint::from_bytes_be(&cke_payload.public_key);
-    if !super::dh::in_range_2_to_p_minus_2(&client_pub, &p) {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid client public key"));
-    }
-    let shared = dh.compute_shared_secret(&priv_key, &client_pub);
-    let mut pre_master = shared.to_bytes_be();
-    let p_len = dh.p.to_bytes_be().len();
-    if pre_master.len() < p_len {
-        let mut pad = vec![0u8; p_len - pre_master.len()];
-        pad.extend_from_slice(&pre_master);
-        pre_master = pad;
-    }
+    let pre_master = if is_dhe {
+        let cke_payload = ClientKeyExchangeDH::parse(&cke.message).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "bad client key exchange payload")
+        })?;
+        let client_pub = BigUint::from_bytes_be(&cke_payload.public_key);
+        if let (Some(dh), Some(priv_key)) = (&dh, &priv_key) {
+            if !super::dh::in_range_2_to_p_minus_2(&client_pub, &dh.p) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid client public key"));
+            }
+            let shared = dh.compute_shared_secret(priv_key, &client_pub);
+            let mut pre_master = shared.to_bytes_be();
+            let p_len = dh.p.to_bytes_be().len();
+            if pre_master.len() < p_len {
+                let mut pad = vec![0u8; p_len - pre_master.len()];
+                pad.extend_from_slice(&pre_master);
+                pre_master = pad;
+            }
+            pre_master
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "dh state missing"));
+        }
+    } else {
+        let rsa_key = parse_private_key(&key_bytes_raw)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let cke_payload = ClientKeyExchangeRSA::parse(&cke.message).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "bad client key exchange payload")
+        })?;
+        rsa_key.decrypt_pkcs1_v1_5(&cke_payload.encrypted).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+    };
+    let mut seed = Vec::new();
+    seed.extend_from_slice(&client_random);
+    seed.extend_from_slice(&server_random);
+    let master = TlsPrfSha256::derive(&pre_master, b"master secret", &seed, 48);
+
+    let mut seed2 = Vec::new();
+    seed2.extend_from_slice(&server_random);
+    seed2.extend_from_slice(&client_random);
     let mut seed = Vec::new();
     seed.extend_from_slice(&client_random);
     seed.extend_from_slice(&server_random);
@@ -459,12 +541,15 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
     seed2.extend_from_slice(&server_random);
     seed2.extend_from_slice(&client_random);
     // As above, TLS 1.2 CBC suites do not use fixed IVs in the key block.
-    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, 96);
+    let key_len = if suite_uses_aes256(chosen_cipher) { 32 } else { 16 };
+    let mac_len = if mac_alg == super::record::MacAlgorithm::Sha1 { 20 } else { 32 };
+    let block_len = mac_len * 2 + key_len * 2;
+    let key_block = TlsPrfSha256::derive(&master, b"key expansion", &seed2, block_len);
 
-    let client_mac_key = key_block[0..32].to_vec();
-    let server_mac_key = key_block[32..64].to_vec();
-    let client_key: [u8; 16] = key_block[64..80].try_into().unwrap();
-    let server_key: [u8; 16] = key_block[80..96].try_into().unwrap();
+    let client_mac_key = key_block[0..mac_len].to_vec();
+    let server_mac_key = key_block[mac_len..mac_len * 2].to_vec();
+    let client_key = &key_block[mac_len * 2..mac_len * 2 + key_len];
+    let server_key = &key_block[mac_len * 2 + key_len..mac_len * 2 + 2 * key_len];
     let client_iv = [0u8; 16];
     let server_iv = [0u8; 16];
 
@@ -472,7 +557,15 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
 
     let mac_key = server_mac_key.clone();
     let iv = server_iv;
-    let read_cipher = AesCipher::new_128(&client_key);
+    let read_cipher = if key_len == 32 {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(client_key);
+        AesCipher::new_256(&k)
+    } else {
+        let mut k = [0u8; 16];
+        k.copy_from_slice(client_key);
+        AesCipher::new_128(&k)
+    };
     let read_mac = client_mac_key.clone();
     let read_iv = client_iv;
 
@@ -484,7 +577,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
             "expected ChangeCipherSpec",
         ));
     }
-    session.set_read_encryption(read_cipher, read_mac.clone(), read_iv);
+    session.set_read_encryption(read_cipher, read_mac.clone(), read_iv, mac_alg);
     let data = session.recv_handshake_message()?;
     let (fin1, _) = HandshakeMessage::parse(&data)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad finished"))?;
@@ -505,11 +598,16 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
 
     // send ChangeCipherSpec and Finished
     session.send(CONTENT_TYPE_CHANGE_CIPHER_SPEC, &[1])?;
-    session.set_write_encryption(
-        AesCipher::new_128(&server_key),
-        server_mac_key.clone(),
-        server_iv,
-    );
+    let write_cipher = if key_len == 32 {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(server_key);
+        AesCipher::new_256(&k)
+    } else {
+        let mut k = [0u8; 16];
+        k.copy_from_slice(server_key);
+        AesCipher::new_128(&k)
+    };
+    session.set_write_encryption(write_cipher, server_mac_key.clone(), server_iv, mac_alg);
     let handshake_hash = sha256::hash(&transcript);
     let verify_data = TlsPrfSha256::derive(&master, b"server finished", &handshake_hash, 12);
     let fin_payload = Finished { verify_data };
@@ -558,6 +656,154 @@ mod tests {
         let roots = vec![crate::ssl::x509::X509Certificate::parse(
             &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem"))
                 .unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut client, "localhost", &roots).unwrap();
+        client.send(23, b"hello").unwrap();
+        let (_, resp) = client.recv().unwrap();
+        assert_eq!(resp, b"world");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn diffie_hellman_aes256() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let cert =
+                crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            let cfg = crate::http::server::TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_256_CBC_SHA256".into()],
+                sni: std::collections::HashMap::new(),
+            };
+            server_handshake(&mut server, &cfg).unwrap();
+            let (ct, data) = server.recv().unwrap();
+            assert_eq!(ct, 23);
+            assert_eq!(data, b"ping");
+            server.send(23, b"pong").unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut client, "localhost", &roots).unwrap();
+        client.send(23, b"ping").unwrap();
+        let (_, resp) = client.recv().unwrap();
+        assert_eq!(resp, b"pong");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn rsa_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let cert =
+                crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            let cfg = crate::http::server::TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_RSA_WITH_AES_128_CBC_SHA256".into()],
+                sni: std::collections::HashMap::new(),
+            };
+            server_handshake(&mut server, &cfg).unwrap();
+            let (ct, data) = server.recv().unwrap();
+            assert_eq!(ct, 23);
+            assert_eq!(data, b"ping");
+            server.send(23, b"pong").unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut client, "localhost", &roots).unwrap();
+        client.send(23, b"ping").unwrap();
+        let (_, resp) = client.recv().unwrap();
+        assert_eq!(resp, b"pong");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn rsa_sha1_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let cert =
+                crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            let cfg = crate::http::server::TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_RSA_WITH_AES_128_CBC_SHA".into()],
+                sni: std::collections::HashMap::new(),
+            };
+            server_handshake(&mut server, &cfg).unwrap();
+            let (ct, data) = server.recv().unwrap();
+            assert_eq!(ct, 23);
+            assert_eq!(data, b"ping");
+            server.send(23, b"pong").unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap(),
+        )
+        .unwrap()];
+        client_handshake(&mut client, "localhost", &roots).unwrap();
+        client.send(23, b"ping").unwrap();
+        let (_, resp) = client.recv().unwrap();
+        assert_eq!(resp, b"pong");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn dhe_sha1_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let mut server = TlsSession::new(sock);
+            let cert =
+                crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap();
+            let key = include_bytes!("../../tests/test_key.pem");
+            let cfg = crate::http::server::TlsConfig {
+                cert,
+                key: key.to_vec(),
+                ciphers: vec!["TLS_DHE_RSA_WITH_AES_128_CBC_SHA".into()],
+                sni: std::collections::HashMap::new(),
+            };
+            server_handshake(&mut server, &cfg).unwrap();
+            let (ct, data) = server.recv().unwrap();
+            assert_eq!(ct, 23);
+            assert_eq!(data, b"hello");
+            server.send(23, b"world").unwrap();
+        });
+
+        let mut client = TlsSession::new(TcpStream::connect(addr).unwrap());
+        let roots = vec![crate::ssl::x509::X509Certificate::parse(
+            &crate::ssl::rsa::pem_to_der(include_str!("../../tests/test_cert.pem")).unwrap(),
         )
         .unwrap()];
         client_handshake(&mut client, "localhost", &roots).unwrap();
