@@ -72,7 +72,9 @@ impl DiffieHellman {
 }
 
 /// Probabilistic primality test using a small set of Miller-Rabin witnesses.
-fn is_prime(candidate: &BigUint) -> bool {
+/// Probabilistic Miller-Rabin primality test.
+/// Exposed for verifying received Diffie-Hellman parameters.
+pub fn is_prime(candidate: &BigUint) -> bool {
     use std::cmp::Ordering;
 
     // handle small primes explicitly
@@ -119,6 +121,20 @@ fn is_prime(candidate: &BigUint) -> bool {
         }
     }
     true
+}
+
+/// Check that `val` is in the inclusive range [2, p-2].
+pub fn in_range_2_to_p_minus_2(val: &BigUint, p: &BigUint) -> bool {
+    use std::cmp::Ordering;
+    let two = BigUint::from_bytes_be(&[2]);
+    if val.cmp(&two) == Ordering::Less {
+        return false;
+    }
+    if p.cmp(&two) != Ordering::Greater {
+        return false;
+    }
+    let max = p.sub(&two);
+    val.cmp(&max) != Ordering::Greater
 }
 
 fn to_u64(n: &BigUint) -> u64 {
