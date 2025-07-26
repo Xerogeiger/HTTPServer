@@ -19,6 +19,10 @@ pub struct TlsSession {
     cipher: Option<AesCipher>,
     mac_key: Vec<u8>,
     iv: [u8; 16],
+    client_mac_key: Vec<u8>,
+    server_mac_key: Vec<u8>,
+    client_iv: [u8; 16],
+    server_iv: [u8; 16],
     write_seq: u64,
     read_seq: u64,
 }
@@ -32,6 +36,10 @@ impl Clone for TlsSession {
             cipher: self.cipher.clone(),
             mac_key: self.mac_key.clone(),
             iv: self.iv,
+            client_mac_key: self.client_mac_key.clone(),
+            server_mac_key: self.server_mac_key.clone(),
+            client_iv: self.client_iv,
+            server_iv: self.server_iv,
             write_seq: self.write_seq,
             read_seq: self.read_seq,
         }
@@ -48,6 +56,10 @@ impl TlsSession {
             cipher: None,
             mac_key: Vec::new(),
             iv: [0u8; 16],
+            client_mac_key: Vec::new(),
+            server_mac_key: Vec::new(),
+            client_iv: [0u8; 16],
+            server_iv: [0u8; 16],
             write_seq: 0,
             read_seq: 0,
         }
@@ -61,6 +73,20 @@ impl TlsSession {
         self.write_seq = 0;
         self.read_seq = 0;
         self.state = TlsState::Encrypted;
+    }
+
+    /// Store key material derived during handshake.
+    pub fn set_key_material(
+        &mut self,
+        client_mac: Vec<u8>,
+        server_mac: Vec<u8>,
+        client_iv: [u8; 16],
+        server_iv: [u8; 16],
+    ) {
+        self.client_mac_key = client_mac;
+        self.server_mac_key = server_mac;
+        self.client_iv = client_iv;
+        self.server_iv = server_iv;
     }
 
     /// Update the internal TLS state machine.
