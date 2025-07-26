@@ -85,18 +85,27 @@ fn parse_private_key_der(der: &[u8]) -> Result<RsaPrivateKey, String> {
     let mut inner = DerReader::new(Cursor::new(&seq.value));
     // version
     inner.read_object().map_err(|e| e.to_string())?;
-    let n_obj = inner.read_object().map_err(|e| e.to_string())?;
-    if n_obj.tag != 0x02 {
-        return Err("Expected INTEGER".into());
+    let obj = inner.read_object().map_err(|e| e.to_string())?;
+    if obj.tag == 0x02 {
+        // PKCS#1 format
+        let n = BigUint::from_bytes_be(&obj.value);
+        let _e_obj = inner.read_object().map_err(|e| e.to_string())?; // public exponent
+        let d_obj = inner.read_object().map_err(|e| e.to_string())?;
+        if d_obj.tag != 0x02 {
+            return Err("Expected INTEGER".into());
+        }
+        let d = BigUint::from_bytes_be(&d_obj.value);
+        Ok(RsaPrivateKey { n, d })
+    } else if obj.tag == 0x30 {
+        // PKCS#8 format
+        let pk_oct = inner.read_object().map_err(|e| e.to_string())?;
+        if pk_oct.tag != 0x04 {
+            return Err("Expected OCTET STRING".into());
+        }
+        parse_private_key_der(&pk_oct.value)
+    } else {
+        Err("Unsupported key format".into())
     }
-    let n = BigUint::from_bytes_be(&n_obj.value);
-    let _e_obj = inner.read_object().map_err(|e| e.to_string())?; // public exponent
-    let d_obj = inner.read_object().map_err(|e| e.to_string())?;
-    if d_obj.tag != 0x02 {
-        return Err("Expected INTEGER".into());
-    }
-    let d = BigUint::from_bytes_be(&d_obj.value);
-    Ok(RsaPrivateKey { n, d })
 }
 
 pub fn parse_private_key(data: &[u8]) -> Result<RsaPrivateKey, String> {

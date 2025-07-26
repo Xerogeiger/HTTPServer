@@ -40,6 +40,9 @@ pub struct HandshakeMessage {
     pub message: Vec<u8>,
 }
 
+/// Extension type for Server Name Indication (SNI).
+pub const EXTENSION_SERVER_NAME: u16 = 0x0000;
+
 impl HandshakeMessage {
     pub fn new(handshake_type: HandshakeType, message: Vec<u8>) -> Self {
         HandshakeMessage {
@@ -91,6 +94,8 @@ pub struct ClientHello {
     pub session_id: Vec<u8>,
     pub cipher_suites: Vec<u16>,
     pub compression_methods: Vec<u8>,
+    /// Extension type and raw data pairs.
+    pub extensions: Vec<(u16, Vec<u8>)>,
 }
 
 impl ClientHello {
@@ -106,7 +111,37 @@ impl ClientHello {
         }
         out.push(self.compression_methods.len() as u8);
         out.extend_from_slice(&self.compression_methods);
+        let mut ext_bytes = Vec::new();
+        for (ty, data) in &self.extensions {
+            ext_bytes.extend_from_slice(&ty.to_be_bytes());
+            ext_bytes.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            ext_bytes.extend_from_slice(data);
+        }
+        out.extend_from_slice(&(ext_bytes.len() as u16).to_be_bytes());
+        out.extend_from_slice(&ext_bytes);
         out
+    }
+
+    /// Return the first host name from the SNI extension if present.
+    pub fn get_sni_hostname(&self) -> Option<String> {
+        for (ty, data) in &self.extensions {
+            if *ty == EXTENSION_SERVER_NAME {
+                if data.len() < 2 { return None; }
+                let list_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+                if data.len() < 2 + list_len || list_len == 0 { return None; }
+                let mut idx = 2;
+                if idx + 3 > data.len() { return None; }
+                let name_type = data[idx];
+                idx += 1;
+                let len = u16::from_be_bytes([data[idx], data[idx + 1]]) as usize;
+                idx += 2;
+                if name_type != 0 || idx + len > data.len() { return None; }
+                return std::str::from_utf8(&data[idx..idx + len])
+                    .ok()
+                    .map(|s| s.to_string());
+            }
+        }
+        None
     }
 
     pub fn parse(data: &[u8]) -> Option<Self> {
@@ -134,12 +169,29 @@ impl ClientHello {
         idx += 1;
         if data.len() < idx + comp_len { return None; }
         let compression_methods = data[idx..idx + comp_len].to_vec();
+        idx += comp_len;
+        if data.len() < idx + 2 { return None; }
+        let ext_len = u16::from_be_bytes([data[idx], data[idx + 1]]) as usize;
+        idx += 2;
+        if data.len() < idx + ext_len { return None; }
+        let mut ext_idx = idx;
+        let mut extensions = Vec::new();
+        while ext_idx < idx + ext_len {
+            if ext_idx + 4 > data.len() { return None; }
+            let ty = u16::from_be_bytes([data[ext_idx], data[ext_idx + 1]]);
+            let len = u16::from_be_bytes([data[ext_idx + 2], data[ext_idx + 3]]) as usize;
+            ext_idx += 4;
+            if ext_idx + len > data.len() { return None; }
+            extensions.push((ty, data[ext_idx..ext_idx + len].to_vec()));
+            ext_idx += len;
+        }
         Some(ClientHello {
             version,
             random,
             session_id,
             cipher_suites,
             compression_methods,
+            extensions,
         })
     }
 }
@@ -355,6 +407,7 @@ mod tests {
             session_id: vec![1, 2, 3],
             cipher_suites: vec![0x0067],
             compression_methods: vec![0],
+            extensions: vec![(0, vec![0, 5, 0, 3, 0, 1, b'a'])],
         };
         let bytes = hello.to_bytes();
         let parsed = ClientHello::parse(&bytes).unwrap();
