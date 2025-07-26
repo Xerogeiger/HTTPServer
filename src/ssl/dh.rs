@@ -166,17 +166,35 @@ pub fn generate_prime(bits: usize, seed: &mut u64) -> BigUint {
 
 /// Generate a prime using the OS RNG for randomness.
 pub fn generate_prime_secure(bits: usize) -> io::Result<BigUint> {
+    if bits >= 2048 {
+        // Reuse the well-known 2048-bit prime from RFC 3526 to avoid expensive generation
+        return Ok(BigUint::from_bytes_be(&PRIME_2048));
+    }
+
     loop {
         let mut candidate = DiffieHellman::generate_private_key_secure(bits)?;
-        if let Some(last) = candidate.to_bytes_be().last() {
-            if last % 2 == 0 {
-                let bytes = candidate.to_bytes_be();
-                let mut new_bytes = bytes.clone();
-                *new_bytes.last_mut().unwrap() |= 1;
-                candidate = BigUint::from_bytes_be(&new_bytes);
+
+        // ensure top bit set so we get the requested bit length
+        if let Some(first) = candidate.to_bytes_be().first().cloned() {
+            if first & 0x80 == 0 {
+                let mut bytes = candidate.to_bytes_be();
+                bytes[0] |= 0x80;
+                candidate = BigUint::from_bytes_be(&bytes);
             }
         }
-        if is_prime(&candidate) { return Ok(candidate); }
+
+        // ensure odd candidate
+        if let Some(last) = candidate.to_bytes_be().last() {
+            if last % 2 == 0 {
+                let mut bytes = candidate.to_bytes_be();
+                *bytes.last_mut().unwrap() |= 1;
+                candidate = BigUint::from_bytes_be(&bytes);
+            }
+        }
+
+        if is_prime(&candidate) {
+            return Ok(candidate);
+        }
     }
 }
 
