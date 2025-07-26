@@ -4,6 +4,36 @@ use super::rng::secure_random_bytes;
 
 pub type ContentType = u8;
 
+/// Constant-time comparison of two byte slices.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let max = a.len().max(b.len());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..max {
+        let ai = if i < a.len() { a[i] } else { 0 };
+        let bi = if i < b.len() { b[i] } else { 0 };
+        diff |= (ai ^ bi) as usize;
+    }
+    diff == 0
+}
+
+/// Validate padding bytes in constant time, returning `(is_valid, pad_len)`.
+fn check_padding(data: &[u8]) -> (bool, usize) {
+    if data.is_empty() {
+        return (false, 0);
+    }
+    let len = data.len();
+    let pad_len = data[len - 1] as usize;
+    let mut diff = 0u8;
+    for i in 0..16 {
+        let idx = len.saturating_sub(1 + i);
+        let byte = if idx < len { data[idx] } else { 0 };
+        let mask = if i < pad_len + 1 { 0xFFu8 } else { 0 };
+        diff |= mask & (byte ^ pad_len as u8);
+    }
+    let valid = diff == 0 && pad_len < 16 && len >= pad_len + 1;
+    (valid, pad_len)
+}
+
 /// TLS version constant for TLS 1.2 used by the examples.
 pub const TLS_VERSION_1_2: u16 = 0x0303;
 
@@ -98,26 +128,27 @@ pub fn decrypt_record(
         return None;
     }
     let iv: [u8; 16] = data[..16].try_into().unwrap();
-    let mut decrypted = cipher.decrypt_cbc_nopad(&data[16..], &iv);
-    if decrypted.len() < 33 {
-        return None;
-    }
-    let pad_len = *decrypted.last().unwrap() as usize;
-    if decrypted.len() < pad_len + 1 + 32 {
-        return None;
-    }
-    for b in &decrypted[decrypted.len() - pad_len - 1..decrypted.len() - 1] {
-        if *b as usize != pad_len {
-            return None;
+    let decrypted = cipher.decrypt_cbc_nopad(&data[16..], &iv);
+
+    // Constant-time padding and MAC validation
+    let (pad_ok, pad_len) = check_padding(&decrypted);
+    let without_pad = decrypted.len().saturating_sub(pad_len + 1);
+    let has_mac = without_pad >= 32;
+    let payload_len = without_pad.saturating_sub(32);
+
+    let mut mac_bytes = [0u8; 32];
+    for i in 0..32 {
+        let idx = payload_len + i;
+        if idx < decrypted.len() {
+            mac_bytes[i] = decrypted[idx];
         }
     }
-    decrypted.truncate(decrypted.len() - pad_len - 1);
-    if decrypted.len() < 32 {
-        return None;
-    }
-    let mac_start = decrypted.len() - 32;
-    let payload = &decrypted[..mac_start];
-    let mac = &decrypted[mac_start..];
+
+    let payload = if payload_len <= decrypted.len() {
+        &decrypted[..payload_len]
+    } else {
+        &decrypted[..0]
+    };
     let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
     mac_input.extend_from_slice(&seq.to_be_bytes());
     mac_input.push(header.content_type);
@@ -125,9 +156,13 @@ pub fn decrypt_record(
     mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     mac_input.extend_from_slice(payload);
     let expected = hmac::hmac(sha256::hash, mac_key, &mac_input);
-    if mac != expected {
+    let mac_ok = ct_eq(&mac_bytes, &expected);
+
+    let valid = pad_ok && has_mac && mac_ok;
+    if !valid {
         return None;
     }
+
     Some(TlsRecord {
         header: RecordHeader {
             content_type: header.content_type,
