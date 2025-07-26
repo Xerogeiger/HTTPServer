@@ -24,13 +24,13 @@ fn check_padding(data: &[u8]) -> (bool, usize) {
     let len = data.len();
     let pad_len = data[len - 1] as usize;
     let mut diff = 0u8;
-    for i in 0..16 {
+    for i in 0..256 {
         let idx = len.saturating_sub(1 + i);
         let byte = if idx < len { data[idx] } else { 0 };
         let mask = if i < pad_len + 1 { 0xFFu8 } else { 0 };
         diff |= mask & (byte ^ pad_len as u8);
     }
-    let valid = diff == 0 && pad_len < 16 && len >= pad_len + 1;
+    let valid = diff == 0 && pad_len < 256 && len >= pad_len + 1;
     (valid, pad_len)
 }
 
@@ -75,15 +75,15 @@ pub struct TlsRecord {
     pub payload: Vec<u8>,
 }
 
-/// Encrypt a plaintext `payload` and build a TLS record.
-pub fn encrypt_record(
+/// Internal helper used by tests to specify an explicit padding length.
+fn encrypt_record_with_padding(
     content_type: ContentType,
     payload: &[u8],
     cipher: &AesCipher,
     mac_key: &[u8],
     seq: u64,
+    pad_len: usize,
 ) -> Vec<u8> {
-    // HMAC over seq_num || header || payload as in TLS 1.2
     let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
     mac_input.extend_from_slice(&seq.to_be_bytes());
     mac_input.push(content_type);
@@ -91,19 +91,17 @@ pub fn encrypt_record(
     mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     mac_input.extend_from_slice(payload);
     let mac = hmac::hmac(sha256::hash, mac_key, &mac_input);
-    let mut plain = Vec::with_capacity(payload.len() + mac.len() + 16);
+
+    let mut plain = Vec::with_capacity(payload.len() + mac.len() + pad_len + 1);
     plain.extend_from_slice(payload);
     plain.extend_from_slice(&mac);
-    let mut pad_len = 16 - ((plain.len() + 1) % 16);
-    if pad_len == 16 {
-        pad_len = 0;
-    }
     plain.extend(std::iter::repeat(pad_len as u8).take(pad_len));
     plain.push(pad_len as u8);
-    // Random IV for each record
+
     let iv_vec = secure_random_bytes(16).expect("failed to get random iv");
     let iv: [u8; 16] = iv_vec[..].try_into().unwrap();
     let encrypted = cipher.encrypt_cbc_nopad(&plain, &iv);
+
     let header = RecordHeader {
         content_type,
         version: TLS_VERSION_1_2,
@@ -114,6 +112,39 @@ pub fn encrypt_record(
     out.extend_from_slice(&iv);
     out.extend_from_slice(&encrypted);
     out
+}
+
+/// Encrypt a plaintext `payload` and build a TLS record.
+pub fn encrypt_record(
+    content_type: ContentType,
+    payload: &[u8],
+    cipher: &AesCipher,
+    mac_key: &[u8],
+    seq: u64,
+) -> Vec<u8> {
+    // Build MAC first
+    let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
+    mac_input.extend_from_slice(&seq.to_be_bytes());
+    mac_input.push(content_type);
+    mac_input.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
+    mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    mac_input.extend_from_slice(payload);
+    let mac = hmac::hmac(sha256::hash, mac_key, &mac_input);
+
+    let mut plain = Vec::with_capacity(payload.len() + mac.len() + 256);
+    plain.extend_from_slice(payload);
+    plain.extend_from_slice(&mac);
+    let mut pad_len = (16 - ((plain.len() + 1) % 16)) % 16;
+
+    // Add additional full blocks of padding up to 255 bytes total
+    let max_extra_blocks = (255 - pad_len) / 16;
+    if max_extra_blocks > 0 {
+        let extra_rand = secure_random_bytes(1).expect("rand")[0] as usize;
+        let extra_blocks = extra_rand % (max_extra_blocks + 1);
+        pad_len += extra_blocks * 16;
+    }
+
+    encrypt_record_with_padding(content_type, payload, cipher, mac_key, seq, pad_len)
 }
 
 /// Decrypt a record payload and verify its MAC.
@@ -233,5 +264,35 @@ mod tests {
         };
         let data = vec![0u8; 21];
         assert!(decrypt_record(&header, &data, &cipher, &mac_key, 0).is_none());
+    }
+
+    #[test]
+    fn large_padding_round_trip() {
+        let key = [0u8; 16];
+        let cipher = AesCipher::new_128(&key);
+        let mac_key = b"mac-key".to_vec();
+        let msg = b"test";
+        let base_pad = (16 - ((msg.len() + 32 + 1) % 16)) % 16;
+        let pad_len = base_pad + 32; // add two extra blocks
+        let enc = encrypt_record_with_padding(23, msg, &cipher, &mac_key, 0, pad_len);
+        let header = RecordHeader::parse(&enc[..5]).unwrap();
+        let body = &enc[5..];
+        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0).unwrap();
+        assert_eq!(dec.payload, msg);
+    }
+
+    #[test]
+    fn max_padding_round_trip() {
+        let key = [0u8; 16];
+        let cipher = AesCipher::new_128(&key);
+        let mac_key = b"mac-key".to_vec();
+        let msg = b"abc";
+        let base_pad = (16 - ((msg.len() + 32 + 1) % 16)) % 16;
+        let pad_len = base_pad + 16 * ((255 - base_pad) / 16);
+        let enc = encrypt_record_with_padding(23, msg, &cipher, &mac_key, 0, pad_len);
+        let header = RecordHeader::parse(&enc[..5]).unwrap();
+        let body = &enc[5..];
+        let dec = decrypt_record(&header, body, &cipher, &mac_key, 0).unwrap();
+        assert_eq!(dec.payload, msg);
     }
 }
