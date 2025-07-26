@@ -247,6 +247,10 @@ impl ServerKeyExchangeDH {
         out.extend_from_slice(&self.g);
         out.extend_from_slice(&(self.public_key.len() as u16).to_be_bytes());
         out.extend_from_slice(&self.public_key);
+        if !self.signature.is_empty() {
+            out.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
+            out.extend_from_slice(&self.signature);
+        }
         out
     }
 
