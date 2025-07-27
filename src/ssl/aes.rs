@@ -168,6 +168,41 @@ const INV_SBOX: [u8; 256] = [
     0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
 ];
 
+const fn gf_mul(mut a: u8, mut b: u8) -> u8 {
+    let mut p = 0u8;
+    let mut i = 0;
+    while i < 8 {
+        if b & 1 != 0 {
+            p ^= a;
+        }
+        let hi = a & 0x80;
+        a <<= 1;
+        if hi != 0 {
+            a ^= 0x1b;
+        }
+        b >>= 1;
+        i += 1;
+    }
+    p
+}
+
+const fn mul_table(m: u8) -> [u8; 256] {
+    let mut table = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        table[i] = gf_mul(i as u8, m);
+        i += 1;
+    }
+    table
+}
+
+const MUL_2: [u8; 256] = mul_table(2);
+const MUL_3: [u8; 256] = mul_table(3);
+const MUL_9: [u8; 256] = mul_table(9);
+const MUL_11: [u8; 256] = mul_table(11);
+const MUL_13: [u8; 256] = mul_table(13);
+const MUL_14: [u8; 256] = mul_table(14);
+
 // Round constants for key expansion
 const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
 
@@ -265,20 +300,18 @@ fn inv_shift_rows(state: &mut [u8; 16]) {
     state[15] = tmp[0];
 }
 
-fn gmul(mut a: u8, mut b: u8) -> u8 {
-    let mut p = 0u8;
-    for _ in 0..8 {
-        if b & 1 != 0 {
-            p ^= a;
-        }
-        let hi = a & 0x80;
-        a <<= 1;
-        if hi != 0 {
-            a ^= 0x1b;
-        }
-        b >>= 1;
+fn gmul(a: u8, b: u8) -> u8 {
+    match b {
+        0 => 0,
+        1 => a,
+        2 => MUL_2[a as usize],
+        3 => MUL_3[a as usize],
+        9 => MUL_9[a as usize],
+        11 => MUL_11[a as usize],
+        13 => MUL_13[a as usize],
+        14 => MUL_14[a as usize],
+        _ => gf_mul(a, b),
     }
-    p
 }
 
 fn mix_columns(state: &mut [u8; 16]) {
@@ -289,10 +322,10 @@ fn mix_columns(state: &mut [u8; 16]) {
             state[c * 4 + 2],
             state[c * 4 + 3],
         ];
-        state[c * 4] = gmul(col[0], 2) ^ gmul(col[1], 3) ^ col[2] ^ col[3];
-        state[c * 4 + 1] = col[0] ^ gmul(col[1], 2) ^ gmul(col[2], 3) ^ col[3];
-        state[c * 4 + 2] = col[0] ^ col[1] ^ gmul(col[2], 2) ^ gmul(col[3], 3);
-        state[c * 4 + 3] = gmul(col[0], 3) ^ col[1] ^ col[2] ^ gmul(col[3], 2);
+        state[c * 4] = MUL_2[col[0] as usize] ^ MUL_3[col[1] as usize] ^ col[2] ^ col[3];
+        state[c * 4 + 1] = col[0] ^ MUL_2[col[1] as usize] ^ MUL_3[col[2] as usize] ^ col[3];
+        state[c * 4 + 2] = col[0] ^ col[1] ^ MUL_2[col[2] as usize] ^ MUL_3[col[3] as usize];
+        state[c * 4 + 3] = MUL_3[col[0] as usize] ^ col[1] ^ col[2] ^ MUL_2[col[3] as usize];
     }
 }
 
@@ -304,10 +337,22 @@ fn inv_mix_columns(state: &mut [u8; 16]) {
             state[c * 4 + 2],
             state[c * 4 + 3],
         ];
-        state[c * 4] = gmul(col[0], 14) ^ gmul(col[1], 11) ^ gmul(col[2], 13) ^ gmul(col[3], 9);
-        state[c * 4 + 1] = gmul(col[0], 9) ^ gmul(col[1], 14) ^ gmul(col[2], 11) ^ gmul(col[3], 13);
-        state[c * 4 + 2] = gmul(col[0], 13) ^ gmul(col[1], 9) ^ gmul(col[2], 14) ^ gmul(col[3], 11);
-        state[c * 4 + 3] = gmul(col[0], 11) ^ gmul(col[1], 13) ^ gmul(col[2], 9) ^ gmul(col[3], 14);
+        state[c * 4] = MUL_14[col[0] as usize]
+            ^ MUL_11[col[1] as usize]
+            ^ MUL_13[col[2] as usize]
+            ^ MUL_9[col[3] as usize];
+        state[c * 4 + 1] = MUL_9[col[0] as usize]
+            ^ MUL_14[col[1] as usize]
+            ^ MUL_11[col[2] as usize]
+            ^ MUL_13[col[3] as usize];
+        state[c * 4 + 2] = MUL_13[col[0] as usize]
+            ^ MUL_9[col[1] as usize]
+            ^ MUL_14[col[2] as usize]
+            ^ MUL_11[col[3] as usize];
+        state[c * 4 + 3] = MUL_11[col[0] as usize]
+            ^ MUL_13[col[1] as usize]
+            ^ MUL_9[col[2] as usize]
+            ^ MUL_14[col[3] as usize];
     }
 }
 
