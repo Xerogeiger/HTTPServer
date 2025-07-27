@@ -131,6 +131,105 @@ fn karatsuba_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
     trim_be(res)
 }
 
+fn modinv32(x: u32) -> u32 {
+    let mut t: i64 = 0;
+    let mut new_t: i64 = 1;
+    let mut r: i64 = 1i64 << 32;
+    let mut new_r: i64 = x as i64;
+
+    while new_r != 0 {
+        let q = r / new_r;
+        let temp_t = t - q * new_t;
+        t = new_t;
+        new_t = temp_t;
+        let temp_r = r - q * new_r;
+        r = new_r;
+        new_r = temp_r;
+    }
+
+    if r > 1 {
+        panic!("inverse does not exist");
+    }
+    if t < 0 {
+        t += 1i64 << 32;
+    }
+    t as u32
+}
+
+fn to_le(x: &BigUint, n: usize) -> Vec<u32> {
+    let mut out = vec![0u32; n];
+    let len = x.0.len();
+    for i in 0..n {
+        if i < len {
+            out[i] = x.0[len - 1 - i];
+        }
+    }
+    out
+}
+
+fn from_le(v: &[u32]) -> BigUint {
+    let mut be = v.to_vec();
+    be.reverse();
+    BigUint::new(be)
+}
+
+fn montgomery_mul(a: &BigUint, b: &BigUint, m: &BigUint, m0inv: u32) -> BigUint {
+    let n = m.0.len();
+    let al = to_le(a, n);
+    let bl = to_le(b, n);
+    let ml = to_le(m, n);
+    let mut t = vec![0u64; n + 1];
+
+    for i in 0..n {
+        // t += a[i] * b
+        let mut carry = 0u64;
+        for j in 0..n {
+            let idx = j;
+            let tmp = t[idx]
+                + al[i] as u64 * bl[j] as u64
+                + carry;
+            t[idx] = tmp & 0xFFFF_FFFF;
+            carry = tmp >> 32;
+        }
+        t[n] = t[n].wrapping_add(carry);
+
+        // q = t[0] * m0inv mod base
+        let q = ((t[0] as u32).wrapping_mul(m0inv)) as u64 & 0xFFFF_FFFF;
+
+        // t += q * m
+        carry = 0u64;
+        for j in 0..n {
+            let idx = j;
+            let tmp = t[idx]
+                + q * ml[j] as u64
+                + carry;
+            t[idx] = tmp & 0xFFFF_FFFF;
+            carry = tmp >> 32;
+        }
+        t[n] = t[n].wrapping_add(carry);
+
+        // divide by base (shift right one limb)
+        for k in 0..n {
+            t[k] = t[k + 1];
+        }
+        t[n] = 0;
+    }
+
+    let mut res_le = vec![0u32; n];
+    for i in 0..n {
+        res_le[i] = t[i] as u32;
+    }
+    let mut res = from_le(&res_le);
+    if res.cmp(m) != Ordering::Less {
+        res = res.sub(m);
+    }
+    res
+}
+
+fn montgomery_reduce(x: &BigUint, m: &BigUint, m0inv: u32) -> BigUint {
+    montgomery_mul(x, &BigUint::one(), m, m0inv)
+}
+
 impl BigUint {
     /// Create a new BigUint trimming leading zeros.
     fn new(limbs: Vec<u32>) -> Self {
@@ -338,19 +437,47 @@ impl BigUint {
         prod.rem(m)
     }
 
+    /// Compute (self * other) mod m using Montgomery multiplication.
+    pub fn mul_mod_montgomery(&self, other: &BigUint, m: &BigUint) -> BigUint {
+        assert!(m.0.last().unwrap() % 2 == 1, "modulus must be odd");
+        let n = m.0.len();
+        let inv = modinv32(*m.0.last().unwrap());
+        let m0inv = (0u32).wrapping_sub(inv);
+
+        let mut r_limbs = vec![0u32; n + 1];
+        r_limbs[0] = 1;
+        let r = BigUint::new(r_limbs);
+        let r2 = r.mul(&r).rem(m);
+
+        let a_m = montgomery_mul(&self.rem(m), &r2, m, m0inv);
+        let b_m = montgomery_mul(&other.rem(m), &r2, m, m0inv);
+        let prod = montgomery_mul(&a_m, &b_m, m, m0inv);
+        montgomery_reduce(&prod, m, m0inv)
+    }
+
     /// Modular exponentiation: self^exp mod m.
     pub fn modpow(&self, exp: &BigUint, m: &BigUint) -> BigUint {
-        let mut result = BigUint::from_bytes_be(&[1]);
-        let base = self.rem(m);
+        assert!(m.0.last().unwrap() % 2 == 1, "modulus must be odd");
+        let n = m.0.len();
+        let inv = modinv32(*m.0.last().unwrap());
+        let m0inv = (0u32).wrapping_sub(inv);
+
+        let mut r_limbs = vec![0u32; n + 1];
+        r_limbs[0] = 1;
+        let r = BigUint::new(r_limbs);
+        let r2 = r.mul(&r).rem(m);
+
+        let mut result = montgomery_mul(&BigUint::one(), &r2, m, m0inv);
+        let base = montgomery_mul(&self.rem(m), &r2, m, m0inv);
         for &digit in exp.0.iter() {
             for i in (0..32).rev() {
-                result = result.mul_mod(&result, m);
+                result = montgomery_mul(&result, &result, m, m0inv);
                 if (digit >> i) & 1 == 1 {
-                    result = result.mul_mod(&base, m);
+                    result = montgomery_mul(&result, &base, m, m0inv);
                 }
             }
         }
-        result
+        montgomery_reduce(&result, m, m0inv)
     }
 
     /// Divide by a small integer, returning (quotient, remainder).
@@ -435,6 +562,15 @@ mod tests {
         let m = BigUint::from_bytes_be(&1000000007u32.to_be_bytes());
         let r = a.mul_mod(&b, &m);
         assert_eq!(r.to_bytes_be(), vec![0x0F, 0x71, 0xA8, 0x2B]); // 259106859
+    }
+
+    #[test]
+    fn test_mul_mod_montgomery_basic() {
+        let a = BigUint::from_bytes_be(&123456789u32.to_be_bytes());
+        let b = BigUint::from_bytes_be(&987654321u32.to_be_bytes());
+        let m = BigUint::from_bytes_be(&1000000007u32.to_be_bytes());
+        let r = a.mul_mod_montgomery(&b, &m);
+        assert_eq!(r.to_bytes_be(), vec![0x0F, 0x71, 0xA8, 0x2B]);
     }
 
     #[test]
