@@ -5,12 +5,142 @@ use std::fmt;
 #[derive(Clone, Debug)]
 pub struct BigUint(Vec<u32>);
 
+/// Threshold above which Karatsuba multiplication is used.
+const KARATSUBA_THRESHOLD: usize = 32;
+
+// Helper functions for Karatsuba multiplication
+fn trim_be(mut v: Vec<u32>) -> Vec<u32> {
+    let mut i = 0;
+    while i + 1 < v.len() && v[i] == 0 {
+        i += 1;
+    }
+    if i > 0 {
+        v.drain(0..i);
+    }
+    if v.is_empty() {
+        v.push(0);
+    }
+    v
+}
+
+fn add_be(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let len = a.len().max(b.len()) + 1;
+    let mut res = vec![0u32; len];
+    let mut carry: u64 = 0;
+    for i in 0..len {
+        let ai = if a.len() > i {
+            a[a.len() - 1 - i] as u64
+        } else {
+            0
+        };
+        let bi = if b.len() > i {
+            b[b.len() - 1 - i] as u64
+        } else {
+            0
+        };
+        let s = ai + bi + carry;
+        res[len - 1 - i] = s as u32;
+        carry = s >> 32;
+    }
+    trim_be(res)
+}
+
+fn sub_be(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let mut res = vec![0u32; a.len()];
+    let mut borrow: i64 = 0;
+    for i in 0..a.len() {
+        let av = a[a.len() - 1 - i] as i64;
+        let bv = if b.len() > i {
+            b[b.len() - 1 - i] as i64
+        } else {
+            0
+        };
+        let mut d = av - bv - borrow;
+        if d < 0 {
+            d += 1 << 32;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        res[a.len() - 1 - i] = d as u32;
+    }
+    trim_be(res)
+}
+
+fn shl_be(a: &[u32], n: usize) -> Vec<u32> {
+    if a.is_empty() || (a.len() == 1 && a[0] == 0) {
+        return vec![0];
+    }
+    let mut res = Vec::with_capacity(a.len() + n);
+    res.extend_from_slice(a);
+    res.extend(std::iter::repeat(0).take(n));
+    res
+}
+
+fn schoolbook_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
+    if a.is_empty() || b.is_empty() {
+        return vec![0];
+    }
+    let al = a.len();
+    let bl = b.len();
+    let mut res = vec![0u32; al + bl];
+    for ia in (0..al).rev() {
+        let aval = a[ia] as u64;
+        let mut carry = 0u64;
+        let mut idx = res.len() - 1 - (al - 1 - ia);
+        for ib in (0..bl).rev() {
+            let pos = idx - (bl - 1 - ib);
+            let tmp = aval * b[ib] as u64 + res[pos] as u64 + carry;
+            res[pos] = tmp as u32;
+            carry = tmp >> 32;
+        }
+        res[idx - bl] = (res[idx - bl] as u64 + carry) as u32;
+    }
+    trim_be(res)
+}
+
+fn karatsuba_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
+    if a.is_empty() || b.is_empty() {
+        return vec![0];
+    }
+    let n = a.len().max(b.len());
+    if n <= KARATSUBA_THRESHOLD {
+        return schoolbook_mul(a, b);
+    }
+    let m = n / 2;
+    let (ah, al) = if a.len() > m {
+        (&a[..a.len() - m], &a[a.len() - m..])
+    } else {
+        (&[][..], a)
+    };
+    let (bh, bl) = if b.len() > m {
+        (&b[..b.len() - m], &b[b.len() - m..])
+    } else {
+        (&[][..], b)
+    };
+    let z0 = karatsuba_mul(al, bl);
+    let z2 = karatsuba_mul(ah, bh);
+    let sum_a = add_be(al, ah);
+    let sum_b = add_be(bl, bh);
+    let mut z1 = karatsuba_mul(&sum_a, &sum_b);
+    z1 = sub_be(&z1, &z0);
+    z1 = sub_be(&z1, &z2);
+    let mut res = shl_be(&z2, m * 2);
+    res = add_be(&res, &shl_be(&z1, m));
+    res = add_be(&res, &z0);
+    trim_be(res)
+}
+
 impl BigUint {
     /// Create a new BigUint trimming leading zeros.
     fn new(limbs: Vec<u32>) -> Self {
         let mut i = 0;
-        while i + 1 < limbs.len() && limbs[i] == 0 { i += 1; }
-        if i == limbs.len() { return BigUint(vec![0]); }
+        while i + 1 < limbs.len() && limbs[i] == 0 {
+            i += 1;
+        }
+        if i == limbs.len() {
+            return BigUint(vec![0]);
+        }
         BigUint(limbs[i..].to_vec())
     }
 
@@ -31,7 +161,9 @@ impl BigUint {
 
     /// Multiply by a single 32-bit digit.
     fn mul_u32(&self, rhs: u32) -> BigUint {
-        if rhs == 0 { return BigUint::zero(); }
+        if rhs == 0 {
+            return BigUint::zero();
+        }
         let mut res = vec![0u32; self.0.len() + 1];
         let mut carry: u64 = 0;
         for i in (0..self.0.len()).rev() {
@@ -48,22 +180,26 @@ impl BigUint {
         if self.is_zero() || other.is_zero() {
             return BigUint::zero();
         }
-        let al = self.0.len();
-        let bl = other.0.len();
-        let mut res = vec![0u32; al + bl];
-        for ia in (0..al).rev() {
-            let a = self.0[ia] as u64;
-            let mut carry = 0u64;
-            let mut idx = res.len() - 1 - (al - 1 - ia);
-            for ib in (0..bl).rev() {
-                let pos = idx - (bl - 1 - ib);
-                let tmp = a * other.0[ib] as u64 + res[pos] as u64 + carry;
-                res[pos] = tmp as u32;
-                carry = tmp >> 32;
+        if self.0.len() > KARATSUBA_THRESHOLD && other.0.len() > KARATSUBA_THRESHOLD {
+            BigUint::new(karatsuba_mul(&self.0, &other.0))
+        } else {
+            let al = self.0.len();
+            let bl = other.0.len();
+            let mut res = vec![0u32; al + bl];
+            for ia in (0..al).rev() {
+                let a = self.0[ia] as u64;
+                let mut carry = 0u64;
+                let mut idx = res.len() - 1 - (al - 1 - ia);
+                for ib in (0..bl).rev() {
+                    let pos = idx - (bl - 1 - ib);
+                    let tmp = a * other.0[ib] as u64 + res[pos] as u64 + carry;
+                    res[pos] = tmp as u32;
+                    carry = tmp >> 32;
+                }
+                res[idx - bl] = (res[idx - bl] as u64 + carry) as u32;
             }
-            res[idx - bl] = (res[idx - bl] as u64 + carry) as u32;
+            BigUint::new(res)
         }
-        BigUint::new(res)
     }
 
     /// Compute self modulo m via long division.
@@ -149,7 +285,11 @@ impl BigUint {
         let mut carry: u64 = 0;
         for i in 0..len {
             let ai = if al > i { self.0[al - 1 - i] as u64 } else { 0 };
-            let bi = if bl > i { other.0[bl - 1 - i] as u64 } else { 0 };
+            let bi = if bl > i {
+                other.0[bl - 1 - i] as u64
+            } else {
+                0
+            };
             let s = ai + bi + carry;
             res[len - 1 - i] = s as u32;
             carry = s >> 32;
@@ -165,9 +305,18 @@ impl BigUint {
         let mut borrow: i64 = 0;
         for i in 0..al {
             let av = self.0[al - 1 - i] as i64;
-            let bv = if bl > i { other.0[bl - 1 - i] as i64 } else { 0 };
+            let bv = if bl > i {
+                other.0[bl - 1 - i] as i64
+            } else {
+                0
+            };
             let mut d = av - bv - borrow;
-            if d < 0 { d += 1 << 32; borrow = 1; } else { borrow = 0; }
+            if d < 0 {
+                d += 1 << 32;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
             res[al - 1 - i] = d as u32;
         }
         BigUint::new(res)
@@ -290,8 +439,8 @@ mod tests {
 
     #[test]
     fn test_add_sub_roundtrip() {
-        let a = BigUint::from_bytes_be(&[1,2,3,4,5,6,7,8,9,10]);
-        let b = BigUint::from_bytes_be(&[11,12,13,14,15,16,17,18,19,20]);
+        let a = BigUint::from_bytes_be(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let b = BigUint::from_bytes_be(&[11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
         let sum = a.add(&b);
         let diff = sum.sub(&b);
         assert_eq!(diff.to_bytes_be(), a.to_bytes_be());
@@ -299,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_mul_div_roundtrip() {
-        let a = BigUint::from_bytes_be(&[10,20,30,40]);
+        let a = BigUint::from_bytes_be(&[10, 20, 30, 40]);
         let b = 123u32;
         let prod = a.mul_u32(b);
         let (q, r) = prod.div_rem_u32(b);
@@ -313,9 +462,29 @@ mod tests {
         let exp = BigUint::from_bytes_be(&[5]);
         let m = BigUint::from_bytes_be(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         let mut expected = BigUint::one();
-        for _ in 0..5 { expected = expected.mul_mod(&base, &m); }
+        for _ in 0..5 {
+            expected = expected.mul_mod(&base, &m);
+        }
         let r = base.modpow(&exp, &m);
         assert_eq!(r.to_bytes_be(), expected.to_bytes_be());
+    }
+
+    #[test]
+    fn test_karatsuba_large_mul() {
+        use num_bigint::BigUint as NumBigUint;
+
+        let a_bytes = vec![0x12u8; 200];
+        let b_bytes = vec![0x34u8; 200];
+
+        let a = BigUint::from_bytes_be(&a_bytes);
+        let b = BigUint::from_bytes_be(&b_bytes);
+        let prod = a.mul(&b);
+
+        let na = NumBigUint::from_bytes_be(&a_bytes);
+        let nb = NumBigUint::from_bytes_be(&b_bytes);
+        let expected = na * nb;
+
+        assert_eq!(prod.to_bytes_be(), expected.to_bytes_be());
     }
 
     #[test]
@@ -325,23 +494,33 @@ mod tests {
         let loops = 100;
 
         let start = Instant::now();
-        for _ in 0..loops { a.add(&b); }
+        for _ in 0..loops {
+            a.add(&b);
+        }
         let add_ns = start.elapsed().as_nanos() / loops as u128;
 
         let start = Instant::now();
-        for _ in 0..loops { a.sub(&b); }
+        for _ in 0..loops {
+            a.sub(&b);
+        }
         let sub_ns = start.elapsed().as_nanos() / loops as u128;
 
         let start = Instant::now();
-        for _ in 0..loops { a.mul(&b); }
+        for _ in 0..loops {
+            a.mul(&b);
+        }
         let mul_ns = start.elapsed().as_nanos() / loops as u128;
 
         let start = Instant::now();
-        for _ in 0..loops { a.div_rem_u32(3); }
+        for _ in 0..loops {
+            a.div_rem_u32(3);
+        }
         let div_ns = start.elapsed().as_nanos() / loops as u128;
 
         let start = Instant::now();
-        for _ in 0..loops { a.to_bytes_be(); }
+        for _ in 0..loops {
+            a.to_bytes_be();
+        }
         let to_bytes_ns = start.elapsed().as_nanos() / loops as u128;
 
         println!(
