@@ -465,7 +465,8 @@ impl BigUint {
         let mut r_limbs = vec![0u32; n + 1];
         r_limbs[0] = 1;
         let r = BigUint::new(r_limbs);
-        let r2 = r.mul(&r).rem(m);
+        let r_mod = r.rem(m);
+        let r2 = r_mod.mul_mod(&r_mod, m);
 
         let mut result = montgomery_mul(&BigUint::one(), &r2, m, m0inv);
         let base = montgomery_mul(&self.rem(m), &r2, m, m0inv);
@@ -603,6 +604,16 @@ mod tests {
         }
         let r = base.modpow(&exp, &m);
         assert_eq!(r.to_bytes_be(), expected.to_bytes_be());
+    }
+
+    #[test]
+    fn test_mul_mod_montgomery_large() {
+        let a = BigUint::from_bytes_be(&[0xAB; 64]);
+        let b = BigUint::from_bytes_be(&[0xCD; 64]);
+        let m = BigUint::from_bytes_be(&[0xEF; 65]);
+        let r_school = a.mul_mod(&b, &m);
+        let r_mont = a.mul_mod_montgomery(&b, &m);
+        assert_eq!(r_school.to_bytes_be(), r_mont.to_bytes_be());
     }
 
     #[test]
