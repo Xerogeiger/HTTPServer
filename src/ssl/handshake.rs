@@ -377,6 +377,28 @@ impl ClientKeyExchangeDH {
     }
 }
 
+/// TLS client key exchange payload for RSA key exchange.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientKeyExchangeRSA {
+    pub encrypted: Vec<u8>,
+}
+
+impl ClientKeyExchangeRSA {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(self.encrypted.len() as u16).to_be_bytes());
+        out.extend_from_slice(&self.encrypted);
+        out
+    }
+
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < 2 { return None; }
+        let len = u16::from_be_bytes([data[0], data[1]]) as usize;
+        if data.len() < 2 + len { return None; }
+        Some(ClientKeyExchangeRSA { encrypted: data[2..2 + len].to_vec() })
+    }
+}
+
 /// TLS Finished message payload containing the verify_data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finished {
