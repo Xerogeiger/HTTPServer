@@ -7,11 +7,11 @@ pub struct BigUint(Vec<u32>);
 
 impl BigUint {
     /// Create a new BigUint trimming leading zeros.
-    fn new(mut limbs: Vec<u32>) -> Self {
-        while limbs.len() > 1 && limbs[0] == 0 {
-            limbs.remove(0);
-        }
-        BigUint(limbs)
+    fn new(limbs: Vec<u32>) -> Self {
+        let mut i = 0;
+        while i + 1 < limbs.len() && limbs[i] == 0 { i += 1; }
+        if i == limbs.len() { return BigUint(vec![0]); }
+        BigUint(limbs[i..].to_vec())
     }
 
     /// Zero constant
@@ -19,37 +19,55 @@ impl BigUint {
         BigUint(vec![0])
     }
 
-    /// Multiply by a single 32-bit digit.
-    fn mul_u32(&self, rhs: u32) -> BigUint {
-        if rhs == 0 {
-            return BigUint::zero();
-        }
-        let mut res_rev = Vec::with_capacity(self.0.len() + 1);
-        let mut carry: u64 = 0;
-        for &limb in self.0.iter().rev() {
-            let prod = limb as u64 * rhs as u64 + carry;
-            res_rev.push((prod & 0xFFFF_FFFF) as u32);
-            carry = prod >> 32;
-        }
-        if carry > 0 {
-            res_rev.push(carry as u32);
-        }
-        res_rev.reverse();
-        BigUint::new(res_rev)
+    /// One constant
+    fn one() -> Self {
+        BigUint(vec![1])
     }
 
-    /// Multiply two BigUints.
-    fn mul(&self, other: &BigUint) -> BigUint {
-        let mut result = BigUint::zero();
-        for (i, &digit) in other.0.iter().rev().enumerate() {
-            if digit == 0 {
-                continue;
-            }
-            let mut part = self.mul_u32(digit).0;
-            part.extend(std::iter::repeat(0).take(i));
-            result = result.add(&BigUint::new(part));
+    /// Check if value is zero
+    fn is_zero(&self) -> bool {
+        self.0.iter().all(|&x| x == 0)
+    }
+
+    /// Multiply by a single 32-bit digit.
+    fn mul_u32(&self, rhs: u32) -> BigUint {
+        if rhs == 0 { return BigUint::zero(); }
+        if rhs == 1 { return self.clone(); }
+        let len = self.0.len();
+        let mut res = vec![0u32; len + 1];
+        let mut carry: u64 = 0;
+        for i in 0..len {
+            let idx = len - 1 - i;
+            let prod = self.0[idx] as u64 * rhs as u64 + carry;
+            res[len - i] = prod as u32;
+            carry = prod >> 32;
         }
-        result
+        res[0] = carry as u32;
+        BigUint::new(res)
+    }
+
+    /// Multiply two BigUints using schoolbook multiplication.
+    fn mul(&self, other: &BigUint) -> BigUint {
+        if self.is_zero() || other.is_zero() { return BigUint::zero(); }
+        if other.0.len() == 1 { return self.mul_u32(other.0[0]); }
+        if self.0.len() == 1 { return other.mul_u32(self.0[0]); }
+
+        let al = self.0.len();
+        let bl = other.0.len();
+        let mut res = vec![0u32; al + bl];
+        for i in 0..al {
+            let a = self.0[al - 1 - i] as u64;
+            let mut carry = 0u64;
+            for j in 0..bl {
+                let idx = res.len() - 1 - (i + j);
+                let tmp = a * other.0[bl - 1 - j] as u64 + res[idx] as u64 + carry;
+                res[idx] = tmp as u32;
+                carry = tmp >> 32;
+            }
+            let idx = res.len() - 1 - (i + bl);
+            res[idx] = (res[idx] as u64 + carry) as u32;
+        }
+        BigUint::new(res)
     }
 
     /// Compute self modulo m via long division.
@@ -128,44 +146,34 @@ impl BigUint {
 
     /// Add two BigUint.
     pub fn add(&self, other: &BigUint) -> BigUint {
-        let a = &self.0;
-        let b = &other.0;
-        let mut res = Vec::with_capacity(a.len().max(b.len()) + 1);
-        let mut carry = 0u64;
-        let mut i = 0;
-        while i < a.len() || i < b.len() || carry > 0 {
-            let av = *a.get(a.len().wrapping_sub(1).wrapping_sub(i)).unwrap_or(&0) as u64;
-            let bv = *b.get(b.len().wrapping_sub(1).wrapping_sub(i)).unwrap_or(&0) as u64;
-            let sum = av + bv + carry;
-            res.push((sum & 0xFFFF_FFFF) as u32);
-            carry = sum >> 32;
-            i += 1;
+        let al = self.0.len();
+        let bl = other.0.len();
+        let len = al.max(bl) + 1;
+        let mut res = vec![0u32; len];
+        let mut carry: u64 = 0;
+        for i in 0..len {
+            let ai = if al > i { self.0[al - 1 - i] as u64 } else { 0 };
+            let bi = if bl > i { other.0[bl - 1 - i] as u64 } else { 0 };
+            let s = ai + bi + carry;
+            res[len - 1 - i] = s as u32;
+            carry = s >> 32;
         }
-        res.reverse();
         BigUint::new(res)
     }
 
     /// Subtract other from self (assumes self ≥ other).
     pub fn sub(&self, other: &BigUint) -> BigUint {
-        let a = &self.0;
-        let b = &other.0;
-        let mut res = Vec::with_capacity(a.len());
-        let mut borrow = 0i64;
-        let mut i = 0;
-        while i < a.len() {
-            let av = a[a.len().wrapping_sub(1).wrapping_sub(i)] as i64;
-            let bv = *b.get(b.len().wrapping_sub(1).wrapping_sub(i)).unwrap_or(&0) as i64;
-            let mut diff = av - bv - borrow;
-            if diff < 0 {
-                diff += 1 << 32;
-                borrow = 1;
-            } else {
-                borrow = 0;
-            }
-            res.push(diff as u32);
-            i += 1;
+        let al = self.0.len();
+        let bl = other.0.len();
+        let mut res = vec![0u32; al];
+        let mut borrow: i64 = 0;
+        for i in 0..al {
+            let av = self.0[al - 1 - i] as i64;
+            let bv = if bl > i { other.0[bl - 1 - i] as i64 } else { 0 };
+            let mut d = av - bv - borrow;
+            if d < 0 { d += 1 << 32; borrow = 1; } else { borrow = 0; }
+            res[al - 1 - i] = d as u32;
         }
-        res.reverse();
         BigUint::new(res)
     }
 
@@ -211,13 +219,11 @@ impl BigUint {
             rem = acc % rhs as u64;
             quo_limbs.push(q);
         }
-        // Trim leading zeros
-        let first_non_zero = quo_limbs
-            .iter()
-            .position(|&x| x != 0)
-            .unwrap_or(quo_limbs.len() - 1);
-        let quo = quo_limbs[first_non_zero..].to_vec();
-        (BigUint(quo), rem as u32)
+        let mut i = 0;
+        while i + 1 < quo_limbs.len() && quo_limbs[i] == 0 {
+            i += 1;
+        }
+        (BigUint(quo_limbs[i..].to_vec()), rem as u32)
     }
 
     /// Divide by a small integer, discarding the remainder.
@@ -227,15 +233,15 @@ impl BigUint {
 
     /// Emit big-endian bytes.
     pub fn to_bytes_be(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(self.0.len() * 4);
         for &limb in &self.0 {
             out.extend_from_slice(&limb.to_be_bytes());
         }
-        // remove leading zeros
-        while out.len() > 1 && out[0] == 0 {
-            out.remove(0);
+        let mut i = 0;
+        while i + 1 < out.len() && out[i] == 0 {
+            i += 1;
         }
-        out
+        out[i..].to_vec()
     }
 }
 
@@ -266,6 +272,7 @@ impl fmt::Display for BigUint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn test_modpow_small() {
@@ -283,5 +290,67 @@ mod tests {
         let m = BigUint::from_bytes_be(&1000000007u32.to_be_bytes());
         let r = a.mul_mod(&b, &m);
         assert_eq!(r.to_bytes_be(), vec![0x0F, 0x71, 0xA8, 0x2B]); // 259106859
+    }
+
+    #[test]
+    fn test_add_sub_roundtrip() {
+        let a = BigUint::from_bytes_be(&[1,2,3,4,5,6,7,8,9,10]);
+        let b = BigUint::from_bytes_be(&[11,12,13,14,15,16,17,18,19,20]);
+        let sum = a.add(&b);
+        let diff = sum.sub(&b);
+        assert_eq!(diff.to_bytes_be(), a.to_bytes_be());
+    }
+
+    #[test]
+    fn test_mul_div_roundtrip() {
+        let a = BigUint::from_bytes_be(&[10,20,30,40]);
+        let b = 123u32;
+        let prod = a.mul_u32(b);
+        let (q, r) = prod.div_rem_u32(b);
+        assert_eq!(r, 0);
+        assert_eq!(q.to_bytes_be(), a.to_bytes_be());
+    }
+
+    #[test]
+    fn test_modpow_large() {
+        let base = BigUint::from_bytes_be(&[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC]);
+        let exp = BigUint::from_bytes_be(&[5]);
+        let m = BigUint::from_bytes_be(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        let mut expected = BigUint::one();
+        for _ in 0..5 { expected = expected.mul_mod(&base, &m); }
+        let r = base.modpow(&exp, &m);
+        assert_eq!(r.to_bytes_be(), expected.to_bytes_be());
+    }
+
+    #[test]
+    fn bench_big_operations() {
+        let a = BigUint::from_bytes_be(&[0xFF; 128]);
+        let b = BigUint::from_bytes_be(&[0xEE; 128]);
+        let loops = 100;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.add(&b); }
+        let add_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.sub(&b); }
+        let sub_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.mul(&b); }
+        let mul_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.div_rem_u32(3); }
+        let div_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.to_bytes_be(); }
+        let to_bytes_ns = start.elapsed().as_nanos() / loops as u128;
+
+        println!(
+            "add {} ns, sub {} ns, mul {} ns, div {} ns, bytes {} ns",
+            add_ns, sub_ns, mul_ns, div_ns, to_bytes_ns
+        );
     }
 }
