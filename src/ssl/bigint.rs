@@ -131,6 +131,93 @@ fn karatsuba_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
     trim_be(res)
 }
 
+// ---- Montgomery helpers ---------------------------------------------------
+
+fn inv32(a: u32) -> u32 {
+    let mut x = a;
+    for _ in 0..5 {
+        x = x.wrapping_mul(2u32.wrapping_sub(a.wrapping_mul(x)));
+    }
+    x
+}
+
+fn to_le_padded(v: &[u32], len: usize) -> Vec<u32> {
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let val = if i < v.len() { v[v.len() - 1 - i] } else { 0 };
+        out.push(val);
+    }
+    out
+}
+
+fn cmp_le(a: &[u32], b: &[u32]) -> Ordering {
+    for i in (0..a.len()).rev() {
+        if a[i] != b[i] {
+            return a[i].cmp(&b[i]);
+        }
+    }
+    Ordering::Equal
+}
+
+fn sub_le(a: &mut [u32], b: &[u32]) {
+    let mut borrow: i64 = 0;
+    for i in 0..a.len() {
+        let av = a[i] as i64;
+        let bv = b[i] as i64;
+        let mut d = av - bv - borrow;
+        if d < 0 {
+            d += 1 << 32;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        a[i] = d as u32;
+    }
+}
+
+fn montgomery_mul_raw(a: &BigUint, b: &BigUint, m: &BigUint, n0_inv: u32) -> BigUint {
+    let n = m.0.len();
+    let a_le = to_le_padded(&a.0, n);
+    let b_le = to_le_padded(&b.0, n);
+    let m_le = to_le_padded(&m.0, n);
+
+    let mut t = vec![0u32; n + 1];
+    for i in 0..n {
+        let ai = a_le[i] as u64;
+        let mut carry = 0u64;
+        for j in 0..n {
+            let u = t[j] as u64 + ai * b_le[j] as u64 + carry;
+            t[j] = u as u32;
+            carry = u >> 32;
+        }
+        let mut u = t[n] as u64 + carry;
+        t[n] = u as u32;
+
+        let m_i = t[0].wrapping_mul(n0_inv);
+        let mut carry2 = 0u64;
+        for j in 0..n {
+            let u2 = t[j] as u64 + (m_i as u64) * m_le[j] as u64 + carry2;
+            t[j] = u2 as u32;
+            carry2 = u2 >> 32;
+        }
+        u = t[n] as u64 + carry2;
+        t[n] = u as u32;
+        let carry_hi = u >> 32;
+
+        for j in 0..n {
+            t[j] = t[j + 1];
+        }
+        t[n] = carry_hi as u32;
+    }
+
+    let mut res = t[..n].to_vec();
+    if t[n] != 0 || cmp_le(&res, &m_le) != Ordering::Less {
+        sub_le(&mut res, &m_le);
+    }
+    let res_be: Vec<u32> = res.into_iter().rev().collect();
+    BigUint::new(res_be)
+}
+
 
 impl BigUint {
     /// Create a new BigUint trimming leading zeros.
@@ -341,32 +428,51 @@ impl BigUint {
 
     /// Compute (self * other) mod m using a basic schoolbook approach.
     pub fn mul_mod_montgomery(&self, other: &BigUint, m: &BigUint) -> BigUint {
-        // Montgomery multiplication previously used for performance.  The
-        // simplified implementation below relies on the existing `mul_mod`
-        // method which performs a full multiplication followed by a modulus
-        // reduction using long division.
-        self.mul_mod(other, m)
+        assert!(m.0.last().unwrap() % 2 == 1, "modulus must be odd");
+
+        let n = m.0.len();
+        let mut r_digits = vec![0u32; n + 1];
+        r_digits[0] = 1;
+        let r = BigUint::new(r_digits);
+        let r2 = r.mul(&r);
+        let r2_mod = r2.rem(m);
+
+        let mut n0_inv = inv32(*m.0.last().unwrap());
+        n0_inv = n0_inv.wrapping_neg();
+
+        let a_m = montgomery_mul_raw(self, &r2_mod, m, n0_inv);
+        let b_m = montgomery_mul_raw(other, &r2_mod, m, n0_inv);
+        let prod = montgomery_mul_raw(&a_m, &b_m, m, n0_inv);
+        montgomery_mul_raw(&prod, &BigUint::one(), m, n0_inv)
     }
 
     /// Modular exponentiation: self^exp mod m.
     pub fn modpow(&self, exp: &BigUint, m: &BigUint) -> BigUint {
         assert!(m.0.last().unwrap() % 2 == 1, "modulus must be odd");
 
-        // Classic square-and-multiply algorithm using the schoolbook
-        // multiplication routine.  The exponent is scanned from most
-        // significant bit to least significant bit to match the original
-        // implementation.
-        let mut result = BigUint::one();
-        let base = self.rem(m);
+        let n = m.0.len();
+        let mut r_digits = vec![0u32; n + 1];
+        r_digits[0] = 1;
+        let r = BigUint::new(r_digits);
+        let r2 = r.mul(&r);
+        let r2_mod = r2.rem(m);
+
+        let mut n0_inv = inv32(*m.0.last().unwrap());
+        n0_inv = n0_inv.wrapping_neg();
+
+        let mut base = montgomery_mul_raw(self, &r2_mod, m, n0_inv);
+        let mut result = montgomery_mul_raw(&BigUint::one(), &r2_mod, m, n0_inv);
+
         for &digit in exp.0.iter() {
             for i in (0..32).rev() {
-                result = result.mul_mod(&result, m);
+                result = montgomery_mul_raw(&result, &result, m, n0_inv);
                 if (digit >> i) & 1 == 1 {
-                    result = result.mul_mod(&base, m);
+                    result = montgomery_mul_raw(&result, &base, m, n0_inv);
                 }
             }
         }
-        result
+
+        montgomery_mul_raw(&result, &BigUint::one(), m, n0_inv)
     }
 
     /// Divide by a small integer, returning (quotient, remainder).
