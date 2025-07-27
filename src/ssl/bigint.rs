@@ -32,14 +32,11 @@ impl BigUint {
     /// Multiply by a single 32-bit digit.
     fn mul_u32(&self, rhs: u32) -> BigUint {
         if rhs == 0 { return BigUint::zero(); }
-        if rhs == 1 { return self.clone(); }
-        let len = self.0.len();
-        let mut res = vec![0u32; len + 1];
+        let mut res = vec![0u32; self.0.len() + 1];
         let mut carry: u64 = 0;
-        for i in 0..len {
-            let idx = len - 1 - i;
-            let prod = self.0[idx] as u64 * rhs as u64 + carry;
-            res[len - i] = prod as u32;
+        for i in (0..self.0.len()).rev() {
+            let prod = self.0[i] as u64 * rhs as u64 + carry;
+            res[i + 1] = prod as u32;
             carry = prod >> 32;
         }
         res[0] = carry as u32;
@@ -48,24 +45,23 @@ impl BigUint {
 
     /// Multiply two BigUints using schoolbook multiplication.
     fn mul(&self, other: &BigUint) -> BigUint {
-        if self.is_zero() || other.is_zero() { return BigUint::zero(); }
-        if other.0.len() == 1 { return self.mul_u32(other.0[0]); }
-        if self.0.len() == 1 { return other.mul_u32(self.0[0]); }
-
+        if self.is_zero() || other.is_zero() {
+            return BigUint::zero();
+        }
         let al = self.0.len();
         let bl = other.0.len();
         let mut res = vec![0u32; al + bl];
-        for i in 0..al {
-            let a = self.0[al - 1 - i] as u64;
+        for ia in (0..al).rev() {
+            let a = self.0[ia] as u64;
             let mut carry = 0u64;
-            for j in 0..bl {
-                let idx = res.len() - 1 - (i + j);
-                let tmp = a * other.0[bl - 1 - j] as u64 + res[idx] as u64 + carry;
-                res[idx] = tmp as u32;
+            let mut idx = res.len() - 1 - (al - 1 - ia);
+            for ib in (0..bl).rev() {
+                let pos = idx - (bl - 1 - ib);
+                let tmp = a * other.0[ib] as u64 + res[pos] as u64 + carry;
+                res[pos] = tmp as u32;
                 carry = tmp >> 32;
             }
-            let idx = res.len() - 1 - (i + bl);
-            res[idx] = (res[idx] as u64 + carry) as u32;
+            res[idx - bl] = (res[idx - bl] as u64 + carry) as u32;
         }
         BigUint::new(res)
     }
