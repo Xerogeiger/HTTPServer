@@ -19,6 +19,16 @@ impl BigUint {
         BigUint(vec![0])
     }
 
+    /// One constant
+    fn one() -> Self {
+        BigUint(vec![1])
+    }
+
+    /// Check if value is zero
+    fn is_zero(&self) -> bool {
+        self.0.iter().all(|&x| x == 0)
+    }
+
     /// Multiply by a single 32-bit digit.
     fn mul_u32(&self, rhs: u32) -> BigUint {
         if rhs == 0 { return BigUint::zero(); }
