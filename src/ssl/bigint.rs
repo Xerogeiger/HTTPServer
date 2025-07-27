@@ -45,20 +45,23 @@ impl BigUint {
 
     /// Multiply two BigUints.
     fn mul(&self, other: &BigUint) -> BigUint {
-        if self.0.iter().all(|&x| x == 0) || other.0.iter().all(|&x| x == 0) {
+        if self.is_zero() || other.is_zero() {
             return BigUint::zero();
         }
-        let len = self.0.len() + other.0.len();
-        let mut res = vec![0u32; len];
-        for (ia, &a) in self.0.iter().rev().enumerate() {
-            let mut carry: u64 = 0;
-            for (ib, &b) in other.0.iter().rev().enumerate() {
-                let idx = len - 1 - (ia + ib);
-                let prod = a as u64 * b as u64 + res[idx] as u64 + carry;
-                res[idx] = prod as u32;
-                carry = prod >> 32;
+        let al = self.0.len();
+        let bl = other.0.len();
+        let mut res = vec![0u32; al + bl];
+        for ia in (0..al).rev() {
+            let a = self.0[ia] as u64;
+            let mut carry = 0u64;
+            let mut idx = res.len() - 1 - (al - 1 - ia);
+            for ib in (0..bl).rev() {
+                let pos = idx - (bl - 1 - ib);
+                let tmp = a * other.0[ib] as u64 + res[pos] as u64 + carry;
+                res[pos] = tmp as u32;
+                carry = tmp >> 32;
             }
-            res[len - 1 - (ia + other.0.len())] = carry as u32;
+            res[idx - bl] = (res[idx - bl] as u64 + carry) as u32;
         }
         BigUint::new(res)
     }
@@ -265,6 +268,7 @@ impl fmt::Display for BigUint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn test_modpow_small() {
@@ -282,5 +286,56 @@ mod tests {
         let m = BigUint::from_bytes_be(&1000000007u32.to_be_bytes());
         let r = a.mul_mod(&b, &m);
         assert_eq!(r.to_bytes_be(), vec![0x0F, 0x71, 0xA8, 0x2B]); // 259106859
+    }
+
+    #[test]
+    fn test_add_sub_roundtrip() {
+        let a = BigUint::from_bytes_be(&[1,2,3,4,5,6,7,8,9,10]);
+        let b = BigUint::from_bytes_be(&[11,12,13,14,15,16,17,18,19,20]);
+        let sum = a.add(&b);
+        let diff = sum.sub(&b);
+        assert_eq!(diff.to_bytes_be(), a.to_bytes_be());
+    }
+
+    #[test]
+    fn test_mul_div_roundtrip() {
+        let a = BigUint::from_bytes_be(&[10,20,30,40]);
+        let b = 123u32;
+        let prod = a.mul_u32(b);
+        let (q, r) = prod.div_rem_u32(b);
+        assert_eq!(r, 0);
+        assert_eq!(q.to_bytes_be(), a.to_bytes_be());
+    }
+
+    #[test]
+    fn bench_big_operations() {
+        let a = BigUint::from_bytes_be(&[0xFF; 128]);
+        let b = BigUint::from_bytes_be(&[0xEE; 128]);
+        let loops = 100;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.add(&b); }
+        let add_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.sub(&b); }
+        let sub_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.mul(&b); }
+        let mul_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.div_rem_u32(3); }
+        let div_ns = start.elapsed().as_nanos() / loops as u128;
+
+        let start = Instant::now();
+        for _ in 0..loops { a.to_bytes_be(); }
+        let to_bytes_ns = start.elapsed().as_nanos() / loops as u128;
+
+        println!(
+            "add {} ns, sub {} ns, mul {} ns, div {} ns, bytes {} ns",
+            add_ns, sub_ns, mul_ns, div_ns, to_bytes_ns
+        );
     }
 }
