@@ -43,7 +43,7 @@ impl BigUint {
         BigUint::new(res)
     }
 
-    /// Multiply two BigUints.
+    /// Multiply two BigUints using schoolbook multiplication.
     fn mul(&self, other: &BigUint) -> BigUint {
         if self.is_zero() || other.is_zero() {
             return BigUint::zero();
@@ -305,6 +305,17 @@ mod tests {
         let (q, r) = prod.div_rem_u32(b);
         assert_eq!(r, 0);
         assert_eq!(q.to_bytes_be(), a.to_bytes_be());
+    }
+
+    #[test]
+    fn test_modpow_large() {
+        let base = BigUint::from_bytes_be(&[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC]);
+        let exp = BigUint::from_bytes_be(&[5]);
+        let m = BigUint::from_bytes_be(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        let mut expected = BigUint::one();
+        for _ in 0..5 { expected = expected.mul_mod(&base, &m); }
+        let r = base.modpow(&exp, &m);
+        assert_eq!(r.to_bytes_be(), expected.to_bytes_be());
     }
 
     #[test]
