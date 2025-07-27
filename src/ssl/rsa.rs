@@ -33,14 +33,33 @@ fn random_nonzero_bytes(len: usize, seed: &mut u64) -> Vec<u8> {
 }
 
 fn random_nonzero_bytes_secure(len: usize) -> io::Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(len);
-    while out.len() < len {
-        let mut b = [0u8; 1];
-        fill_secure_random(&mut b)?;
-        if b[0] != 0 {
-            out.push(b[0]);
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut out = vec![0u8; len];
+    // Initial fill of the entire buffer
+    fill_secure_random(&mut out)?;
+
+    // Replace any zeros with fresh random bytes until none remain
+    loop {
+        let zero_positions: Vec<usize> = out
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| if b == 0 { Some(i) } else { None })
+            .collect();
+
+        if zero_positions.is_empty() {
+            break;
+        }
+
+        let mut tmp = vec![0u8; zero_positions.len()];
+        fill_secure_random(&mut tmp)?;
+        for (pos, val) in zero_positions.into_iter().zip(tmp.into_iter()) {
+            out[pos] = val;
         }
     }
+
     Ok(out)
 }
 
@@ -324,5 +343,12 @@ mod tests {
         let sig = key.sign_pkcs1_v1_5_sha256(msg);
         let pubkey = RsaPublicKey::new(key.n.clone(), BigUint::from_bytes_be(&[1, 0, 1]));
         assert!(pubkey.verify_pkcs1_v1_5_sha256(msg, &sig).unwrap());
+    }
+
+    #[test]
+    fn secure_nonzero_bytes() {
+        let bytes = super::random_nonzero_bytes_secure(64).unwrap();
+        assert_eq!(bytes.len(), 64);
+        assert!(bytes.iter().all(|&b| b != 0));
     }
 }
