@@ -92,33 +92,41 @@ fn encrypt_record_with_padding(
     pad_len: usize,
     mac_alg: MacAlgorithm,
 ) -> Vec<u8> {
-    let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
-    mac_input.extend_from_slice(&seq.to_be_bytes());
-    mac_input.push(content_type);
-    mac_input.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
-    mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-    mac_input.extend_from_slice(payload);
+    // Single reusable buffer for intermediate data
+    let mut buf = Vec::with_capacity(8 + 5 + payload.len());
+
+    // --- Build MAC input ---
+    buf.extend_from_slice(&seq.to_be_bytes());
+    buf.push(content_type);
+    buf.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
+    buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    buf.extend_from_slice(payload);
     let mac = match mac_alg {
-        MacAlgorithm::Sha256 => hmac::hmac::<_, 32>(sha256::hash, mac_key, &mac_input).to_vec(),
-        MacAlgorithm::Sha1 => hmac::hmac::<_, 20>(sha1::hash, mac_key, &mac_input).to_vec(),
+        MacAlgorithm::Sha256 => hmac::hmac::<_, 32>(sha256::hash, mac_key, &buf).to_vec(),
+        MacAlgorithm::Sha1 => hmac::hmac::<_, 20>(sha1::hash, mac_key, &buf).to_vec(),
     };
 
-    let mut plain = Vec::with_capacity(payload.len() + mac.len() + pad_len + 1);
-    plain.extend_from_slice(payload);
-    plain.extend_from_slice(&mac);
-    plain.extend(std::iter::repeat(pad_len as u8).take(pad_len));
-    plain.push(pad_len as u8);
+    // --- Reuse buffer for plaintext ---
+    buf.clear();
+    let needed = payload.len() + mac.len() + pad_len + 1;
+    if buf.capacity() < needed {
+        buf.reserve(needed - buf.capacity());
+    }
+    buf.extend_from_slice(payload);
+    buf.extend_from_slice(&mac);
+    buf.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+    buf.push(pad_len as u8);
 
     let iv_vec = secure_random_bytes(16).expect("failed to get random iv");
     let iv: [u8; 16] = iv_vec[..].try_into().unwrap();
-    let encrypted = cipher.encrypt_cbc_nopad(&plain, &iv);
+    let encrypted = cipher.encrypt_cbc_nopad(&buf, &iv);
 
     let header = RecordHeader {
         content_type,
         version: TLS_VERSION_1_2,
         length: (iv.len() + encrypted.len()) as u16,
     };
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(5 + iv.len() + encrypted.len());
     out.extend_from_slice(&header.to_bytes());
     out.extend_from_slice(&iv);
     out.extend_from_slice(&encrypted);
@@ -134,22 +142,20 @@ pub fn encrypt_record(
     seq: u64,
     mac_alg: MacAlgorithm,
 ) -> Vec<u8> {
-    // Build MAC first
-    let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
-    mac_input.extend_from_slice(&seq.to_be_bytes());
-    mac_input.push(content_type);
-    mac_input.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
-    mac_input.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-    mac_input.extend_from_slice(payload);
+    // Use a single buffer for MAC input and plaintext
+    let mut buf = Vec::with_capacity(8 + 5 + payload.len());
+    buf.extend_from_slice(&seq.to_be_bytes());
+    buf.push(content_type);
+    buf.extend_from_slice(&TLS_VERSION_1_2.to_be_bytes());
+    buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    buf.extend_from_slice(payload);
     let mac = match mac_alg {
-        MacAlgorithm::Sha256 => hmac::hmac::<_, 32>(sha256::hash, mac_key, &mac_input).to_vec(),
-        MacAlgorithm::Sha1 => hmac::hmac::<_, 20>(sha1::hash, mac_key, &mac_input).to_vec(),
+        MacAlgorithm::Sha256 => hmac::hmac::<_, 32>(sha256::hash, mac_key, &buf).to_vec(),
+        MacAlgorithm::Sha1 => hmac::hmac::<_, 20>(sha1::hash, mac_key, &buf).to_vec(),
     };
 
-    let mut plain = Vec::with_capacity(payload.len() + mac.len() + 256);
-    plain.extend_from_slice(payload);
-    plain.extend_from_slice(&mac);
-    let mut pad_len = (16 - ((plain.len() + 1) % 16)) % 16;
+    buf.clear();
+    let mut pad_len = (16 - ((payload.len() + mac.len() + 1) % 16)) % 16;
 
     // Add additional full blocks of padding up to 255 bytes total
     let max_extra_blocks = (255 - pad_len) / 16;
@@ -200,6 +206,7 @@ pub fn decrypt_record(
     } else {
         &decrypted[..0]
     };
+    // Reuse a single buffer for MAC verification
     let mut mac_input = Vec::with_capacity(8 + 5 + payload.len());
     mac_input.extend_from_slice(&seq.to_be_bytes());
     mac_input.push(header.content_type);
