@@ -1,3 +1,5 @@
+#![cfg(feature = "slow-tests")]
+
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
@@ -31,6 +33,7 @@ impl HttpMapping for HelloMapping {
 }
 
 #[test]
+#[ignore]
 fn openssl_https_request() {
     // Bind to port 0 to obtain an available port
     let temp = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();

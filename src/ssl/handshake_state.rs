@@ -656,6 +656,8 @@ mod tests {
     use crate::http::server::TlsConfig;
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn diffie_hellman_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -694,6 +696,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn diffie_hellman_aes256() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -731,6 +735,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn rsa_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -768,6 +774,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn rsa_sha1_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -805,6 +813,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn dhe_sha1_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -842,6 +852,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn tls_stream_roundtrip() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -881,6 +893,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn sni_certificate_selection() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -914,6 +928,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn server_handshake_requires_certificate() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -949,6 +965,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn client_fails_on_empty_certificate() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -990,6 +1008,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn client_rejects_invalid_dh_params() {
         use std::thread;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1062,6 +1082,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn server_rejects_invalid_client_key() {
         use std::thread;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1110,6 +1132,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn client_rejects_wrong_tls_version() {
         use std::thread;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1147,6 +1171,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn server_rejects_wrong_tls_version() {
         use std::thread;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

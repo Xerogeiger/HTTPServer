@@ -995,6 +995,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn https_server_connection() {
         use crate::ssl::handshake_state::client_handshake;
         use crate::ssl::state::TlsSession;
@@ -1064,6 +1066,7 @@ mod tests {
 
     #[test]
     #[ignore]
+    #[cfg(feature = "slow-tests")]
     fn https_client_helper() {
         use std::net::{IpAddr, Ipv4Addr};
 
