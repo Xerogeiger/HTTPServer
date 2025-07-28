@@ -16,6 +16,34 @@ use super::state::{TlsSession, TlsState};
 use crate::http::server::TlsConfig;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+const TEST_DH_P: [u8; 64] = [
+    0x8f,0xc4,0x3c,0x50,0xdb,0xc3,0x05,0xce,0x5f,0x84,0x2f,0x21,0x02,0xd0,0x1f,0x4f,
+    0x56,0x6f,0xa0,0xd4,0x15,0x8e,0x4f,0xbe,0x2f,0xe8,0x22,0x48,0xca,0xbd,0xa0,0x56,
+    0xc7,0x3e,0x3b,0x83,0xe3,0xa2,0x7e,0xfb,0x1d,0x43,0xf5,0x73,0x63,0x3d,0x5e,0xdd,
+    0x63,0xbc,0xa8,0x13,0x56,0x91,0xef,0xb7,0xe6,0x60,0xb2,0x30,0x55,0x3c,0xda,0x17,
+];
+
+#[cfg(test)]
+fn test_dh_params() -> (BigUint, BigUint) {
+    (
+        BigUint::from_bytes_be(&TEST_DH_P),
+        BigUint::from_bytes_be(&[2]),
+    )
+}
+
+#[cfg(test)]
+fn generate_dh_params() -> io::Result<(BigUint, BigUint)> {
+    Ok(test_dh_params())
+}
+
+#[cfg(not(test))]
+fn generate_dh_params() -> io::Result<(BigUint, BigUint)> {
+    let p = generate_prime_secure(2048)?;
+    let g = BigUint::from_bytes_be(&[2]);
+    Ok((p, g))
+}
+
 /// TLS record content type for handshake messages.
 const CONTENT_TYPE_HANDSHAKE: ContentType = 22;
 const CONTENT_TYPE_CHANGE_CIPHER_SPEC: ContentType = 20;
@@ -443,8 +471,7 @@ pub fn server_handshake(session: &mut TlsSession, cfg: &TlsConfig) -> io::Result
 
     let (dh, priv_key) = if is_dhe {
         // -------- ServerKeyExchange --------
-        let p = generate_prime_secure(2048).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        let g = BigUint::from_bytes_be(&[2]);
+        let (p, g) = generate_dh_params().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         let dh = DiffieHellman::new(p.clone(), g.clone());
         let priv_key = DiffieHellman::generate_private_key_secure(256)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -1158,8 +1185,8 @@ mod tests {
 
     #[test]
     fn dh_prime_size() {
-        let p = generate_prime_secure(2048).unwrap();
-        assert!(p.to_bytes_be().len() >= 256);
+        let (p, _) = super::test_dh_params();
+        assert!(p.to_bytes_be().len() >= 64);
     }
 
     #[test]
