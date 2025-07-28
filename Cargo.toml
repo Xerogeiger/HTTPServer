@@ -13,6 +13,11 @@ hmac = "0.12"
 hex = "0.4"
 num-bigint = "0.4"
 num-traits = "0.2"
+criterion = "0.7"
 
 [features]
 slow-tests = []
+
+[[bench]]
+name = "big_ops"
+harness = false

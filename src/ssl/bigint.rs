@@ -264,7 +264,7 @@ impl BigUint {
     }
 
     /// Multiply two BigUints using schoolbook multiplication.
-    fn mul(&self, other: &BigUint) -> BigUint {
+    pub fn mul(&self, other: &BigUint) -> BigUint {
         if self.is_zero() || other.is_zero() {
             return BigUint::zero();
         }
@@ -476,7 +476,7 @@ impl BigUint {
     }
 
     /// Divide by a small integer, returning (quotient, remainder).
-    fn div_rem_u32(&self, rhs: u32) -> (BigUint, u32) {
+    pub fn div_rem_u32(&self, rhs: u32) -> (BigUint, u32) {
         assert!(rhs != 0);
         let mut rem: u64 = 0;
         let mut quo_limbs = Vec::with_capacity(self.0.len());
@@ -539,7 +539,6 @@ impl fmt::Display for BigUint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn test_modpow_small() {
@@ -629,70 +628,11 @@ mod tests {
     }
 
     #[test]
-    fn bench_big_operations() {
-        let a = BigUint::from_bytes_be(&[0xFF; 128]);
-        let b = BigUint::from_bytes_be(&[0xEE; 128]);
-        let loops = 100;
-
-        let start = Instant::now();
-        for _ in 0..loops {
-            a.add(&b);
-        }
-        let add_ns = start.elapsed().as_nanos() / loops as u128;
-
-        let start = Instant::now();
-        for _ in 0..loops {
-            a.sub(&b);
-        }
-        let sub_ns = start.elapsed().as_nanos() / loops as u128;
-
-        let start = Instant::now();
-        for _ in 0..loops {
-            a.mul(&b);
-        }
-        let mul_ns = start.elapsed().as_nanos() / loops as u128;
-
-        let start = Instant::now();
-        for _ in 0..loops {
-            a.div_rem_u32(3);
-        }
-        let div_ns = start.elapsed().as_nanos() / loops as u128;
-
-        let start = Instant::now();
-        for _ in 0..loops {
-            a.to_bytes_be();
-        }
-        let to_bytes_ns = start.elapsed().as_nanos() / loops as u128;
-
-        println!(
-            "add {} ns, sub {} ns, mul {} ns, div {} ns, bytes {} ns",
-            add_ns, sub_ns, mul_ns, div_ns, to_bytes_ns
-        );
-
-        // Benchmark record encryption/decryption to verify reduced allocations
-        use crate::ssl::aes::AesCipher;
-        use crate::ssl::record::{decrypt_record, encrypt_record, RecordHeader, TLS_VERSION_1_2, MacAlgorithm};
-
-        let cipher = AesCipher::new_128(&[0u8; 16]);
-        let mac_key = b"bench-key".to_vec();
-        let payload = vec![0xAAu8; 512];
-
-        let start = Instant::now();
-        for i in 0..loops {
-            let _ = encrypt_record(23, &payload, &cipher, &mac_key, i as u64, MacAlgorithm::Sha256);
-        }
-        let enc_ns = start.elapsed().as_nanos() / loops as u128;
-
-        let record = encrypt_record(23, &payload, &cipher, &mac_key, 0, MacAlgorithm::Sha256);
-        let header = RecordHeader::parse(&record[..5]).unwrap();
-        let body = &record[5..];
-
-        let start = Instant::now();
-        for i in 0..loops {
-            let _ = decrypt_record(&header, body, &cipher, &mac_key, i as u64, MacAlgorithm::Sha256);
-        }
-        let dec_ns = start.elapsed().as_nanos() / loops as u128;
-
-        println!("enc {} ns, dec {} ns", enc_ns, dec_ns);
+    fn biguint_ops_sanity() {
+        let a = BigUint::from_bytes_be(&[1, 2, 3, 4]);
+        let b = BigUint::from_bytes_be(&[4, 3, 2, 1]);
+        let sum = a.add(&b);
+        let diff = sum.sub(&b);
+        assert_eq!(diff.to_bytes_be(), a.to_bytes_be());
     }
 }
