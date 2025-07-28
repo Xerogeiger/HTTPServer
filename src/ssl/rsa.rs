@@ -14,6 +14,11 @@ pub struct RsaPublicKey {
 pub struct RsaPrivateKey {
     pub n: BigUint,
     pub d: BigUint,
+    pub p: Option<BigUint>,
+    pub q: Option<BigUint>,
+    pub dp: Option<BigUint>,
+    pub dq: Option<BigUint>,
+    pub q_inv: Option<BigUint>,
 }
 
 fn lcg_next(seed: &mut u64) -> u8 {
@@ -101,7 +106,7 @@ fn parse_private_key_der(der: &[u8]) -> Result<RsaPrivateKey, String> {
     if seq.tag != 0x30 {
         return Err("Expected SEQUENCE".into());
     }
-    let mut inner = DerReader::new(Cursor::new(&seq.value));
+    let mut inner = DerReader::new(Cursor::new(&seq.value[..]));
     // version
     inner.read_object().map_err(|e| e.to_string())?;
     let obj = inner.read_object().map_err(|e| e.to_string())?;
@@ -114,7 +119,26 @@ fn parse_private_key_der(der: &[u8]) -> Result<RsaPrivateKey, String> {
             return Err("Expected INTEGER".into());
         }
         let d = BigUint::from_bytes_be(&d_obj.value);
-        Ok(RsaPrivateKey { n, d })
+        let mut read_opt = |r: &mut DerReader<Cursor<&[u8]>>| -> Option<BigUint> {
+            match r.read_object() {
+                Ok(o) if o.tag == 0x02 => Some(BigUint::from_bytes_be(&o.value)),
+                _ => None,
+            }
+        };
+        let p = read_opt(&mut inner);
+        let q = read_opt(&mut inner);
+        let dp = read_opt(&mut inner);
+        let dq = read_opt(&mut inner);
+        let q_inv = read_opt(&mut inner);
+        Ok(RsaPrivateKey {
+            n,
+            d,
+            p,
+            q,
+            dp,
+            dq,
+            q_inv,
+        })
     } else if obj.tag == 0x30 {
         // PKCS#8 format
         let pk_oct = inner.read_object().map_err(|e| e.to_string())?;
@@ -226,7 +250,7 @@ impl RsaPublicKey {
         i += 1;
         let mut rdr = DerReader::new(Cursor::new(&em[i..]));
         let seq = rdr.read_object().map_err(|e| e.to_string())?;
-        let mut inner = DerReader::new(Cursor::new(&seq.value));
+        let mut inner = DerReader::new(Cursor::new(&seq.value[..]));
         let _ = inner.read_object().map_err(|e| e.to_string())?;
         let oct = inner.read_object().map_err(|e| e.to_string())?;
         if oct.tag != 0x04 {
@@ -238,7 +262,34 @@ impl RsaPublicKey {
 
 impl RsaPrivateKey {
     pub fn new(n: BigUint, d: BigUint) -> Self {
-        Self { n, d }
+        Self {
+            n,
+            d,
+            p: None,
+            q: None,
+            dp: None,
+            dq: None,
+            q_inv: None,
+        }
+    }
+
+    fn crt_exp(&self, base: &BigUint) -> BigUint {
+        use std::cmp::Ordering;
+        match (&self.p, &self.q, &self.dp, &self.dq, &self.q_inv) {
+            (Some(p), Some(q), Some(dp), Some(dq), Some(q_inv)) => {
+                let m1 = base.rem(p).modpow(dp, p);
+                let m2 = base.rem(q).modpow(dq, q);
+                let diff = if m1.cmp(&m2) == Ordering::Less {
+                    m1.add(p).sub(&m2)
+                } else {
+                    m1.sub(&m2)
+                };
+                let h = q_inv.mul_mod(&diff, p);
+                let hq = q.mul_mod(&h, &self.n);
+                hq.add(&m2)
+            }
+            _ => base.modpow(&self.d, &self.n),
+        }
     }
 
     /// Decrypt PKCS#1 v1.5 padded ciphertext
@@ -248,7 +299,7 @@ impl RsaPrivateKey {
             return Err("invalid ciphertext length".into());
         }
         let c = BigUint::from_bytes_be(ct);
-        let m = c.modpow(&self.d, &self.n);
+        let m = self.crt_exp(&c);
         let mut em = m.to_bytes_be();
         if em.len() < k {
             let mut pad = vec![0u8; k - em.len()];
@@ -284,7 +335,7 @@ impl RsaPrivateKey {
         em.push(0);
         em.extend_from_slice(&t);
         let m = BigUint::from_bytes_be(&em);
-        let s = m.modpow(&self.d, &self.n);
+        let s = self.crt_exp(&m);
         let mut out = s.to_bytes_be();
         if out.len() < k {
             let mut pad = vec![0u8; k - out.len()];
@@ -350,5 +401,36 @@ mod tests {
         let bytes = super::random_nonzero_bytes_secure(64).unwrap();
         assert_eq!(bytes.len(), 64);
         assert!(bytes.iter().all(|&b| b != 0));
+    }
+
+    #[test]
+    fn crt_parameters_parsed() {
+        let data = include_bytes!("../../tests/test_key.pem");
+        let key = parse_private_key(data).unwrap();
+        assert!(key.p.is_some());
+        assert!(key.q.is_some());
+        assert!(key.dp.is_some());
+        assert!(key.dq.is_some());
+        assert!(key.q_inv.is_some());
+    }
+
+    #[test]
+    fn crt_decrypt_and_sign() {
+        let data = include_bytes!("../../tests/test_key.pem");
+        let key = parse_private_key(data).unwrap();
+        let pubkey = RsaPublicKey::new(key.n.clone(), BigUint::from_bytes_be(&[1, 0, 1]));
+        let mut seed = 42u64;
+        let msg = b"hello crt".to_vec();
+        let ct = pubkey
+            .encrypt_pkcs1_v1_5_with_seed(&msg, &mut seed)
+            .unwrap();
+        let dec = key.decrypt_pkcs1_v1_5(&ct).unwrap();
+        let fallback = RsaPrivateKey::new(key.n.clone(), key.d.clone());
+        let dec2 = fallback.decrypt_pkcs1_v1_5(&ct).unwrap();
+        assert_eq!(dec2, msg);
+        assert_eq!(dec, dec2);
+
+        let sig = key.sign_pkcs1_v1_5_sha256(&msg);
+        assert!(pubkey.verify_pkcs1_v1_5_sha256(&msg, &sig).unwrap());
     }
 }
