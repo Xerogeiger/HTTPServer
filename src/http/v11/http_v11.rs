@@ -592,13 +592,18 @@ impl HttpServer for HttpV11Server {
                 match listener.accept() {
                     Ok((stream, addr)) => {
                         println!("Accepted {}", addr);
-                        // Create a new client
-                        let client = create_client(stream, tls_config.clone()).unwrap();
-                        client.lock().unwrap().thread =
-                            handle_client(client.clone(), mappings.clone())
-                                .expect("Failed to handle client");
-                        // Add the client to the list of clients
-                        clients.lock().unwrap().push(client.clone());
+                        match create_client(stream, tls_config.clone()) {
+                            Ok(client) => {
+                                client.lock().unwrap().thread =
+                                    handle_client(client.clone(), mappings.clone())
+                                        .expect("Failed to handle client");
+                                clients.lock().unwrap().push(client.clone());
+                            }
+                            Err(e) => {
+                                eprintln!("TLS handshake failed from {}: {}", addr, e);
+                                continue;
+                            }
+                        }
                     }
 
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1115,6 +1120,76 @@ mod tests {
         client.enable_tls();
         client.set_keep_alive(false);
         let resp = client.get("/hi").unwrap();
+        assert_eq!(resp.status.code, 200);
+        assert_eq!(resp.body.unwrap(), b"ok");
+
+        server.stop().unwrap();
+    }
+
+    #[test]
+    fn failed_tls_handshake_does_not_crash_server() {
+        use std::io::Write;
+        use std::net::{IpAddr, Ipv4Addr, Shutdown, TcpStream};
+
+        struct OkMapping;
+        impl HttpMapping for OkMapping {
+            fn matches_url(&self, url: &str) -> bool {
+                url == "/"
+            }
+
+            fn matches_method(&self, method: &RequestMethod) -> bool {
+                *method == RequestMethod::Get
+            }
+
+            fn get_content_type(&self) -> ContentType {
+                ContentType::TextPlain
+            }
+
+            fn handle_request(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
+                Ok(HttpResponse::from_status(
+                    StatusCode::Ok,
+                    vec![("Content-Type".into(), ContentType::TextPlain.to_string())],
+                    Some(b"ok".to_vec()),
+                ))
+            }
+        }
+
+        let mut server = HttpV11Server::new(0, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        server.add_mapping(Box::new(OkMapping)).unwrap();
+        server
+            .enable_tls(TlsConfig {
+                cert: crate::ssl::rsa::pem_to_der(include_str!("../../../tests/test_cert.pem"))
+                    .unwrap(),
+                key: include_bytes!("../../../tests/test_key.pem").to_vec(),
+                ciphers: vec![],
+                sni: std::collections::HashMap::new(),
+            })
+            .unwrap();
+        server.start().unwrap();
+
+        let port = server
+            .tcp_listener
+            .as_ref()
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+
+        // Connect without performing a TLS handshake
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        assert!(server.is_running().unwrap());
+
+        // Verify the server still accepts proper TLS connections
+        let mut client = HttpV11Client::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        client.enable_tls();
+        client.set_keep_alive(false);
+        let resp = client.get("/").unwrap();
         assert_eq!(resp.status.code, 200);
         assert_eq!(resp.body.unwrap(), b"ok");
 
