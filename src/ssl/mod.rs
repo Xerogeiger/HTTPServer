@@ -1,11 +1,11 @@
-mod aes;
-mod bigint;
+pub mod aes;
+pub mod bigint;
 mod crypto;
 mod dh;
 mod handshake;
 pub mod handshake_state;
 mod prf;
-mod record;
+pub mod record;
 mod rng;
 pub mod rsa;
 pub mod state;
