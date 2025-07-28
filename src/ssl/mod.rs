@@ -2,6 +2,7 @@ pub mod aes;
 pub mod bigint;
 mod crypto;
 mod dh;
+mod ecdhe;
 mod handshake;
 pub mod handshake_state;
 mod prf;
